@@ -1,11 +1,13 @@
 #include "optical_body.h"
 #include "../drivers/laser_matrix.h"
 #include "../drivers/bpw34_reader.h"
+#include "../drivers/event_reader.h"
 #include "../protocol/json_encoder.h"
 #include <math.h>
 
 static LaserMatrix lasers;
 static BPW34Reader detectors;
+static EventReader events;
 
 OpticalBody::OpticalBody(const char* node_id) : node_id_(node_id) {
   clearTransfer();
@@ -37,10 +39,15 @@ bool OpticalBody::begin() {
     Serial.println(F("[OpticalBody] BPW34 reader init failed"));
     return false;
   }
+  // Event stream is parallel and non-fatal (sparse LM393s OK)
+  events.begin();
+
   Serial.print(F("[OpticalBody] emitters="));
   Serial.print(lasers.numLasers());
   Serial.print(F("  detectors="));
-  Serial.println(detectors.numDetectors());
+  Serial.print(detectors.numDetectors());
+  Serial.print(F("  event_ch="));
+  Serial.println(events.numChannels());
   return true;
 }
 
@@ -66,7 +73,7 @@ bool OpticalBody::readAveraged(float* out, size_t n, uint16_t samples) {
 bool OpticalBody::acquireDarkFrame() {
   Serial.println(F("[OpticalBody] Dark frame — all emitters OFF"));
   lasers.allOff();
-  delay(30);  // settle ambient + electrical
+  delay(30);
 
   bool ok = readAveraged(dark_, NUM_DETECTORS, 4);
   if (!ok) {
@@ -90,20 +97,18 @@ void OpticalBody::runSelfMap() {
   clearTransfer();
   fingerprint_.clear();
 
-  // 1. Dark frame — isolate electrical / ambient floor
+  // Calibration uses ANALOG only (perception). Events are reflexes, not geometry.
   if (!acquireDarkFrame()) {
     Serial.println(F("[OpticalBody] aborting self-map — no dark frame"));
     return;
   }
 
-  // 2. Formal one-hot excitation sequence
   sequence_.buildOneHot((uint8_t)NUM_LASERS, /*settle*/ 15, /*samples*/ 2, /*repeats*/ 1);
   Serial.print(F("[OpticalBody] sequence="));
   Serial.print(sequence_.label());
   Serial.print(F("  steps="));
   Serial.println(sequence_.numSteps());
 
-  // 3. Run each step: fire → settle → average → dark-correct → store
   for (int si = 0; si < sequence_.numSteps(); ++si) {
     const ExcitationStep& step = sequence_.step(si);
     uint8_t laser = step.source_id;
@@ -128,7 +133,6 @@ void OpticalBody::runSelfMap() {
       if (!ok) continue;
       any_ok = true;
 
-      // Dark-correct: R_corrected = R_measured - D
       for (int d = 0; d < NUM_DETECTORS; ++d) {
         float c = buf[d] - dark_[d];
         if (c < 0.0f) c = 0.0f;
@@ -152,7 +156,6 @@ void OpticalBody::runSelfMap() {
     Serial.println(F(" ok"));
   }
 
-  // 4. First physical memory → FRAM
   fingerprint_.timestamp_ms = millis();
   fingerprint_.num_lasers = NUM_LASERS;
   fingerprint_.num_detectors = NUM_DETECTORS;
@@ -184,7 +187,6 @@ void OpticalBody::tickPassive() {
   lasers.allOff();
 
   if (ok) {
-    // Dark-correct when we have a fingerprint
     if (fingerprint_.valid) {
       for (int d = 0; d < NUM_DETECTORS; ++d) {
         buf[d] -= fingerprint_.dark_frame[d];
@@ -197,7 +199,7 @@ void OpticalBody::tickPassive() {
 }
 
 void OpticalBody::emitObservation(uint16_t laser_id, const float* detectors, size_t n,
-                                  bool dark_corrected) {
+                                  bool /*dark_corrected*/) {
   FieldObservation obs;
   obs.body_id        = node_id_;
   obs.body_type      = "optical";
@@ -207,6 +209,9 @@ void OpticalBody::emitObservation(uint16_t laser_id, const float* detectors, siz
   obs.health         = "ok";
   obs.laser_id       = (int)laser_id;
   obs.schema_version = 1;
+
+  // Parallel reflex stream — sparse LM393 mask (0 until wired)
+  obs.event_mask = events.readMask();
 
   for (size_t i = 0; i < n; ++i) {
     FieldRegion r;
