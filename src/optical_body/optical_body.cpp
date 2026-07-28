@@ -29,6 +29,19 @@ bool OpticalBody::begin() {
     Serial.print(F("[OpticalBody] loaded identity  geometry_version="));
     Serial.println(identity_.geometryVersion());
     calibrated_ = true;
+    // Hydrate fingerprint expected rows from FRAM mirror for anomaly calc
+    fingerprint_.valid = true;
+    fingerprint_.num_lasers = NUM_LASERS;
+    fingerprint_.num_detectors = NUM_DETECTORS;
+    strncpy(fingerprint_.geometry_version, identity_.geometryVersion(),
+            sizeof(fingerprint_.geometry_version) - 1);
+    for (int l = 0; l < NUM_LASERS; ++l) {
+      for (int d = 0; d < NUM_DETECTORS; ++d) {
+        float e = identity_.getExpected((uint16_t)l, (uint16_t)d);
+        transfer_[l][d] = e;
+        fingerprint_.matrix[l][d] = e;
+      }
+    }
   }
 
   if (!lasers.begin()) {
@@ -39,7 +52,6 @@ bool OpticalBody::begin() {
     Serial.println(F("[OpticalBody] BPW34 reader init failed"));
     return false;
   }
-  // Event stream is parallel and non-fatal (sparse LM393s OK)
   events.begin();
 
   Serial.print(F("[OpticalBody] emitters="));
@@ -49,6 +61,77 @@ bool OpticalBody::begin() {
   Serial.print(F("  event_ch="));
   Serial.println(events.numChannels());
   return true;
+}
+
+float OpticalBody::verifyIdentity(bool* out_unchanged, float threshold) {
+  if (out_unchanged) *out_unchanged = false;
+
+  if (!identity_.hasIdentity()) {
+    Serial.println(F("[Identity] no stored fingerprint — full calibration required"));
+    return 1.0f;
+  }
+
+  Serial.println(F("[Identity] probing body against stored fingerprint…"));
+
+  // Fresh dark so residual is optical, not bias
+  if (!acquireDarkFrame()) {
+    Serial.println(F("[Identity] dark frame failed during verify"));
+    return 1.0f;
+  }
+
+  // Sparse probe: a few sources across the bank (not full self-map)
+  const int probe_ids[] = {0, NUM_LASERS / 2, NUM_LASERS - 1};
+  const int n_probes = 3;
+  float sum_abs = 0.0f;
+  int n_terms = 0;
+
+  for (int pi = 0; pi < n_probes; ++pi) {
+    int laser = probe_ids[pi];
+    if (laser < 0 || laser >= NUM_LASERS) continue;
+
+    lasers.fire((uint8_t)laser);
+    delay(15);
+    float buf[NUM_DETECTORS];
+    bool ok = readAveraged(buf, NUM_DETECTORS, 2);
+    lasers.allOff();
+    delay(5);
+    if (!ok) continue;
+
+    for (int d = 0; d < NUM_DETECTORS; ++d) {
+      float corrected = buf[d] - dark_[d];
+      if (corrected < 0.0f) corrected = 0.0f;
+      float expected = identity_.getExpected((uint16_t)laser, (uint16_t)d);
+      sum_abs += fabsf(corrected - expected);
+      n_terms++;
+    }
+
+    Serial.print(F("  probe source "));
+    Serial.print(laser);
+    Serial.println(F(" ok"));
+  }
+
+  float mean_residual = (n_terms > 0) ? (sum_abs / (float)n_terms) : 1.0f;
+  bool unchanged = mean_residual <= threshold;
+  if (out_unchanged) *out_unchanged = unchanged;
+
+  Serial.print(F("[Identity] mean residual="));
+  Serial.print(mean_residual, 4);
+  Serial.print(F("  threshold="));
+  Serial.print(threshold, 4);
+  Serial.print(F("  → "));
+  Serial.println(unchanged ? F("Body unchanged") : F("Geometry drift detected"));
+
+  // Emit a small status line as JSON for the host archive
+  String status = String("{\"event\":\"identity_verify\",\"node\":\"") +
+                  node_id_ +
+                  "\",\"mean_residual\":" + String(mean_residual, 4) +
+                  ",\"unchanged\":" + String(unchanged ? "true" : "false") +
+                  "}";
+  archive_.appendCalibrationEvent(status);
+  Serial.println(status);
+
+  calibrated_ = unchanged || identity_.hasIdentity();
+  return mean_residual;
 }
 
 bool OpticalBody::readAveraged(float* out, size_t n, uint16_t samples) {
@@ -97,7 +180,6 @@ void OpticalBody::runSelfMap() {
   clearTransfer();
   fingerprint_.clear();
 
-  // Calibration uses ANALOG only (perception). Events are reflexes, not geometry.
   if (!acquireDarkFrame()) {
     Serial.println(F("[OpticalBody] aborting self-map — no dark frame"));
     return;
@@ -192,8 +274,14 @@ void OpticalBody::tickPassive() {
         buf[d] -= fingerprint_.dark_frame[d];
         if (buf[d] < 0.0f) buf[d] = 0.0f;
       }
+    } else {
+      // still subtract last dark_ if we have one from verify
+      for (int d = 0; d < NUM_DETECTORS; ++d) {
+        buf[d] -= dark_[d];
+        if (buf[d] < 0.0f) buf[d] = 0.0f;
+      }
     }
-    emitObservation(laser, buf, NUM_DETECTORS, fingerprint_.valid);
+    emitObservation(laser, buf, NUM_DETECTORS, true);
   }
   excitation_counter_++;
 }
@@ -209,16 +297,14 @@ void OpticalBody::emitObservation(uint16_t laser_id, const float* detectors, siz
   obs.health         = "ok";
   obs.laser_id       = (int)laser_id;
   obs.schema_version = 1;
-
-  // Parallel reflex stream — sparse LM393 mask (0 until wired)
-  obs.event_mask = events.readMask();
+  obs.event_mask     = events.readMask();
 
   for (size_t i = 0; i < n; ++i) {
     FieldRegion r;
     r.region   = "detector_" + String(i < 10 ? "0" : "") + String(i);
     r.observed = detectors[i];
 
-    if (fingerprint_.valid || calibrated_) {
+    if (fingerprint_.valid || calibrated_ || identity_.hasIdentity()) {
       r.expected = fingerprint_.expected((uint8_t)laser_id, (uint8_t)i);
       if (isnan(r.expected))
         r.expected = identity_.getExpected(laser_id, (uint16_t)i);
