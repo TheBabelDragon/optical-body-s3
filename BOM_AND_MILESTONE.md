@@ -13,8 +13,6 @@ MicroSD               → experience archive
 MetaField memory      → meaning / replay
 ```
 
-A 40×100 transfer matrix is already 4,000 values per calibration pass. Repeated experiments need bulk storage. Firmware already has `SdArchive` hooks; wire CS when the module arrives.
-
 ---
 
 ## Final hardware list
@@ -40,15 +38,29 @@ No further ICs required for Phase 0–1.
 
 > **The device can reboot, identify its optical body, and reproduce the same field response.**
 
+**Firmware boot path (implemented):**
+
+```
+begin()
+  load FRAM identity if present
+if identity:
+  verifyIdentity()   # dark + sparse probe vs expected
+  residual ≤ threshold → "Body unchanged" → skip full map
+  residual > threshold → "Geometry drift detected" → runSelfMap()
+else:
+  runSelfMap()       # first birth certificate
+passive loop
+```
+
 Concrete checks:
 
-1. **Boot** — load OpticalFingerprint from FRAM (or run clean calibration if empty).
-2. **Identify** — geometry_version + dark frame + transfer matrix present.
-3. **Reproduce** — re-run one-hot (or stored sequence); dark-corrected responses match fingerprint within a noise floor / residual threshold.
-4. **Persist** — power cycle; identity still loads; no forced re-map unless drift detected.
-5. **Archive** (once SD wired) — calibration + observation JSONL lands on card.
+1. **Boot** — load OpticalFingerprint from FRAM (or calibrate if empty).
+2. **Identify** — geometry_version present; sparse probe against expected.
+3. **Reproduce** — residual within threshold ⇒ body unchanged.
+4. **Persist** — power cycle; identity still loads; remap only on drift.
+5. **Archive** (once SD wired) — verify + calibration JSONL on card.
 
-When that works, MetaField has something real to learn from.
+When that works on hardware, MetaField has something real to learn from.
 
 ---
 
