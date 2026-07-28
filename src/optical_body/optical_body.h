@@ -3,14 +3,16 @@
 #include <Arduino.h>
 #include <vector>
 #include "../protocol/field_observation.h"
+#include "../memory/fram_identity.h"
+#include "../memory/sd_archive.h"
 
 /**
  * OpticalBody
  *
  * Owns the physical optical node lifecycle for Phase 0.
- * - begin()        : init drivers, announce identity
- * - runSelfMap()   : fire every laser, record detector vectors, store fingerprint
- * - tickPassive()  : single excitation + emit FieldObservation packet
+ * - begin()        : init drivers + FRAM + SD, announce identity
+ * - runSelfMap()   : fire every laser, record detector vectors, store fingerprint in FRAM
+ * - tickPassive()  : single excitation + emit FieldObservation packet (+ SD append)
  *
  * Does NOT run MetaField. Only produces observation packets.
  */
@@ -29,6 +31,9 @@ private:
   const char* node_id_;
   bool calibrated_ = false;
   uint32_t excitation_counter_ = 0;
+
+  FramIdentity identity_;
+  SdArchive archive_;
 
   // Config (will later come from FRAM / config)
   static constexpr int NUM_LASERS    = 12;   // adjust to real wiring
