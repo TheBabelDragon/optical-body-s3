@@ -308,6 +308,9 @@ void OpticalBody::emitObservation(uint16_t laser_id, const float* detectors, siz
   obs.schema_version = 1;
   obs.event_mask     = events.readMask();
 
+  float max_obs = 0.0f;
+  int max_idx = 0;
+
   for (size_t i = 0; i < n; ++i) {
     FieldRegion r;
     r.region   = "detector_" + String(i < 10 ? "0" : "") + String(i);
@@ -331,9 +334,31 @@ void OpticalBody::emitObservation(uint16_t laser_id, const float* detectors, siz
 
     r.confidence = (detectors[i] > 0.05f) ? 0.9f : 0.5f;
     obs.regions.push_back(r);
+
+    if (detectors[i] > max_obs) {
+      max_obs = detectors[i];
+      max_idx = (int)i;
+    }
   }
 
+  // 1) Rich optical format (existing, preserved)
   String json = encodeFieldObservation(obs);
   Serial.println(json);
   archive_.appendObservation(json);
+
+  // 2) Compact Field Body Protocol line (shared with Echo Grid)
+  //    Hosts that only understand the minimal contract can still close the loop.
+  Serial.print(F("OBS {"));
+  Serial.print(F("\"body_id\":\"")); Serial.print(node_id_); Serial.print(F("\","));
+  Serial.print(F("\"body_type\":\"optical\","));
+  Serial.print(F("\"excitation_id\":")); Serial.print((int)laser_id); Serial.print(F(","));
+  Serial.print(F("\"geometry_state\":\"")); Serial.print(obs.geometry_state); Serial.print(F("\","));
+  Serial.print(F("\"health\":\"")); Serial.print(obs.health); Serial.print(F("\","));
+  Serial.print(F("\"regions\":[{\"region\":\"detector_"));
+  if (max_idx < 10) Serial.print('0');
+  Serial.print(max_idx);
+  Serial.print(F("\",\"observed\":"));
+  Serial.print(max_obs, 4);
+  Serial.print(F(",\"confidence\":0.85}]"));
+  Serial.println(F("}"));
 }
