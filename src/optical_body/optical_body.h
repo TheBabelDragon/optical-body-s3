@@ -5,16 +5,18 @@
 #include "../protocol/field_observation.h"
 #include "../memory/fram_identity.h"
 #include "../memory/sd_archive.h"
+#include "../calibration/excitation_sequence.h"
+#include "../calibration/optical_fingerprint.h"
 
 /**
  * OpticalBody
  *
- * Owns the physical optical node lifecycle for Phase 0.
- * - begin()        : init drivers + FRAM + SD, announce identity
- * - runSelfMap()   : fire every laser, record detector vectors, store fingerprint in FRAM
- * - tickPassive()  : single excitation + emit FieldObservation packet (+ SD append)
+ * Phase 0 scientifically clean calibration:
+ *   1. Dark frame (all emitters OFF)
+ *   2. Formal ExcitationSequence (one-hot by default)
+ *   3. Dark-corrected transfer matrix → OpticalFingerprint → FRAM
  *
- * Does NOT run MetaField. Only produces observation packets.
+ * Does NOT run MetaField. Only produces observation packets + identity.
  */
 class OpticalBody {
 public:
@@ -26,6 +28,7 @@ public:
 
   const char* nodeId() const { return node_id_; }
   bool isCalibrated() const { return calibrated_; }
+  const OpticalFingerprint& fingerprint() const { return fingerprint_; }
 
 private:
   const char* node_id_;
@@ -34,15 +37,18 @@ private:
 
   FramIdentity identity_;
   SdArchive archive_;
+  OpticalFingerprint fingerprint_;
+  ExcitationSequence sequence_;
 
-  // Config (will later come from FRAM / config)
   static constexpr int NUM_LASERS    = 12;   // adjust to real wiring
   static constexpr int NUM_DETECTORS = 20;   // adjust to real wiring
 
-  // Simple in-RAM transfer matrix for Phase 0 / early Phase 1
-  // M[laser][detector]  (normalized 0..1)
+  float dark_[NUM_DETECTORS];
   float transfer_[NUM_LASERS][NUM_DETECTORS];
 
   void clearTransfer();
-  void emitObservation(uint16_t laser_id, const float* detectors, size_t n);
+  bool acquireDarkFrame();
+  bool readAveraged(float* out, size_t n, uint16_t samples);
+  void emitObservation(uint16_t laser_id, const float* detectors, size_t n,
+                       bool dark_corrected);
 };
