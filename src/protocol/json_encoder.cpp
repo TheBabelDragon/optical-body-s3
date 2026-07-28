@@ -15,6 +15,8 @@ String encodeFieldObservation(const FieldObservation& obs) {
   if (obs.laser_id >= 0) {
     doc["modality"]["laser_id"] = obs.laser_id;
   }
+  // Always emit event_mask so host can distinguish "no events" from "no event hardware"
+  doc["modality"]["event_mask"] = obs.event_mask;
 
   JsonArray regions = doc["field_regions"].to<JsonArray>();
   for (const auto& r : obs.regions) {
