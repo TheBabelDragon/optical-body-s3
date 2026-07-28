@@ -7,8 +7,9 @@
  * Minimal C++ mirror of schemas/field_observation.py
  * so the ESP32 can emit the same conceptual packet.
  *
- * We keep it simple: a few fixed fields + a detector vector.
- * JSON encoding happens in json_encoder.
+ * Dual detector streams:
+ *   regions[]     ← ADS1115 analog field ("how much")
+ *   event_mask    ← LM393 reflex layer ("what changed")
  */
 
 struct FieldRegion {
@@ -29,6 +30,7 @@ struct FieldObservation {
   String health;          // "ok" | "partial" | "error"
   int    schema_version = 1;
 
-  // Optional modality payload (laser id, pattern, etc.)
-  int    laser_id = -1;
+  // Modality payload
+  int      laser_id = -1;
+  uint32_t event_mask = 0;   // LM393 active channels bitmask (0 = none / unwired)
 };
