@@ -14,75 +14,56 @@ Aurora coordination
 MetaField core  (geometry, attractors, confidence, curiosity)
 ```
 
-The S3’s job:
-- Drive lasers
-- Sample BPW34 detectors (**real ADC values preferred**)
-- Timestamp observations
-- Report health
-- Execute calibration / self-map sequences
-- Maintain local identity (node_id + geometry fingerprint)
-- Own working RAM + FRAM identity + (optional) MicroSD experience archive
+---
 
-MetaField’s job (elsewhere):
-- Infer geometry
-- Learn transfer behavior
-- Maintain attractors + **Field Memory** (episodic)
-- Calculate confidence / anomaly
-- Decide what is interesting
+## Clean calibration (whatsinthebox)
 
-Companion docs in [metafield](https://github.com/TheBabelDragon/metafield):
-- `PHYSICAL_FIELD_SUBSTRATE.md`
-- `MEMORY_ARCHITECTURE.md` ← three-tier memory
-- `schemas/field_observation.py`
-- `schemas/field_memory.py`
-- Issue #1 (Phase 0)
+Boot path is now a scientifically clean isolation experiment:
+
+```
+1. Dark frame
+   All emitters OFF → read BPW34 array → D[detector]
+
+2. Formal ExcitationSequence (one-hot v1)
+   For each source:
+     fire source_id
+     settle
+     average N samples
+     R_corrected = R_measured − D
+
+3. OpticalFingerprint
+   {
+     dark_frame[],
+     laser_response_matrix[][],   // dark-corrected
+     timestamp,
+     geometry_version
+   }
+   → FRAM (first physical memory)
+```
+
+Later sequence versions can change the experiment without touching hardware:
+- v1: one-hot lasers
+- v2: pairs
+- v3: pseudo-random patterns
+
+GPIO pin map stays last. Abstraction remains:
+
+```
+lasers.fire(id)
+detectors.readAll(buf)
+```
 
 ---
 
-## Memory layers (this node owns two of them)
+## Memory layers
 
 ```
-FRAM (MB85RC256V)     → “Who am I?”          identity + calibration
+FRAM (MB85RC256V)     → “Who am I?”          OpticalFingerprint + identity
 MicroSD               → experience archive   JSONL logs, history
 ESP32 RAM / PSRAM     → current thought      laser state, detector frame
 ```
 
-MetaField owns the third layer (episodic Field Memory).
-
-See `MEMORY_ARCHITECTURE.md` in the metafield repo for the full rationale.
-
----
-
-## Phase 0 goal
-
-Match the Python stub (`optical_body_stub.py` in metafield) in spirit:
-
-Emit valid observation packets that can be consumed by the same schema.
-
-**Prefer real BPW34 → ADS1115 values from day one.**  
-Synthetic values only as a compile-time fallback during board bring-up.
-
----
-
-## Hardware mapping (current plan)
-
-**Laser side**
-```
-ESP32 GPIO → SN74AHCT125 → MOSFET → laser bank
-```
-
-**Detector side**
-```
-BPW34 → ADS1115 (I2C) via CD74HC4067 mux
-        (optional parallel LM393 event path for fast triggers)
-```
-
-**Expansion / memory**
-```
-MCP23017     — laser enables, status lines, calibration controls
-MB85RC256V   — FRAM identity (persistent calibration)
-MicroSD      — experience archive (JSONL)
-```
+MetaField owns episodic Field Memory (see metafield `MEMORY_ARCHITECTURE.md`).
 
 ---
 
@@ -92,19 +73,13 @@ MicroSD      — experience archive (JSONL)
 src/
   main.cpp
   optical_body/
-    optical_body.cpp / .h
-  drivers/
-    laser_matrix.cpp / .h
-    bpw34_reader.cpp / .h
-    mux_controller.cpp / .h
-  memory/
-    fram_identity.cpp / .h     ← persistent “Who am I?”
-    sd_archive.cpp / .h        ← experience archive
+  drivers/          laser_matrix, bpw34_reader, mux_controller
+  memory/           fram_identity, sd_archive
   calibration/
-    transfer_matrix.cpp / .h
-  protocol/
-    field_observation.h
-    json_encoder.cpp / .h
+    excitation_sequence.*   ← formal experiment object
+    optical_fingerprint.*   ← dark + matrix + version
+    transfer_matrix.h
+  protocol/         field_observation, json_encoder
 ```
 
 ---
@@ -115,28 +90,36 @@ src/
 Hello.
 I am optical_s3_001
 N emitters / M detectors
-Beginning self-map…
-Laser 0 → recording…
-Laser 1 → recording…
-…
-Geometry fingerprint created.
-[FRAM] identity saved
+Dark frame — all emitters OFF
+sequence=onehot-v1  steps=N
+  source 0 → isolating… ok
+  source 1 → isolating… ok
+  …
+OpticalFingerprint created + saved to FRAM.
 ```
 
-That fingerprint (`M[laser][detector]`) is the optical identity of the structure and is intended to live in FRAM.
+That fingerprint is the first real field: emitter space × detector space.
+
+---
+
+## Hardware mapping (current plan)
+
+**Laser side** — ESP32 GPIO → SN74AHCT125 → MOSFET → laser bank  
+**Detector side** — BPW34 → ADS1115 (I2C) via CD74HC4067  
+**Memory** — MB85RC256V FRAM, MicroSD, optional MCP23017 expansion
+
+**Prefer real BPW34 values.** Synthetic only if `OPTICAL_USE_SYNTHETIC` is defined.
 
 ---
 
 ## Build
-
-PlatformIO project. Target: ESP32-S3.
 
 ```bash
 pio run -t upload
 pio device monitor
 ```
 
-Optional: define `OPTICAL_USE_SYNTHETIC` in `platformio.ini` only when detectors are not yet wired.
+Companion: [metafield](https://github.com/TheBabelDragon/metafield) — schemas, FieldMemoryStore, serial consumer.
 
 ---
 
