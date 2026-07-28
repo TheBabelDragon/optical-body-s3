@@ -29,7 +29,6 @@ bool OpticalBody::begin() {
     Serial.print(F("[OpticalBody] loaded identity  geometry_version="));
     Serial.println(identity_.geometryVersion());
     calibrated_ = true;
-    // Hydrate fingerprint expected rows from FRAM mirror for anomaly calc
     fingerprint_.valid = true;
     fingerprint_.num_lasers = NUM_LASERS;
     fingerprint_.num_detectors = NUM_DETECTORS;
@@ -73,13 +72,11 @@ float OpticalBody::verifyIdentity(bool* out_unchanged, float threshold) {
 
   Serial.println(F("[Identity] probing body against stored fingerprint…"));
 
-  // Fresh dark so residual is optical, not bias
   if (!acquireDarkFrame()) {
     Serial.println(F("[Identity] dark frame failed during verify"));
     return 1.0f;
   }
 
-  // Sparse probe: a few sources across the bank (not full self-map)
   const int probe_ids[] = {0, NUM_LASERS / 2, NUM_LASERS - 1};
   const int n_probes = 3;
   float sum_abs = 0.0f;
@@ -121,7 +118,6 @@ float OpticalBody::verifyIdentity(bool* out_unchanged, float threshold) {
   Serial.print(F("  → "));
   Serial.println(unchanged ? F("Body unchanged") : F("Geometry drift detected"));
 
-  // Emit a small status line as JSON for the host archive
   String status = String("{\"event\":\"identity_verify\",\"node\":\"") +
                   node_id_ +
                   "\",\"mean_residual\":" + String(mean_residual, 4) +
@@ -132,6 +128,27 @@ float OpticalBody::verifyIdentity(bool* out_unchanged, float threshold) {
 
   calibrated_ = unchanged || identity_.hasIdentity();
   return mean_residual;
+}
+
+bool OpticalBody::exciteOnce(uint16_t laser_id) {
+  if (laser_id >= (uint16_t)NUM_LASERS) return false;
+
+  float buf[NUM_DETECTORS];
+  lasers.fire((uint8_t)laser_id);
+  delay(15);
+  bool ok = readAveraged(buf, NUM_DETECTORS, 2);
+  lasers.allOff();
+
+  if (!ok) return false;
+
+  for (int d = 0; d < NUM_DETECTORS; ++d) {
+    buf[d] -= dark_[d];
+    if (buf[d] < 0.0f) buf[d] = 0.0f;
+  }
+
+  emitObservation(laser_id, buf, NUM_DETECTORS, true);
+  excitation_counter_++;
+  return true;
 }
 
 bool OpticalBody::readAveraged(float* out, size_t n, uint16_t samples) {
@@ -269,17 +286,9 @@ void OpticalBody::tickPassive() {
   lasers.allOff();
 
   if (ok) {
-    if (fingerprint_.valid) {
-      for (int d = 0; d < NUM_DETECTORS; ++d) {
-        buf[d] -= fingerprint_.dark_frame[d];
-        if (buf[d] < 0.0f) buf[d] = 0.0f;
-      }
-    } else {
-      // still subtract last dark_ if we have one from verify
-      for (int d = 0; d < NUM_DETECTORS; ++d) {
-        buf[d] -= dark_[d];
-        if (buf[d] < 0.0f) buf[d] = 0.0f;
-      }
+    for (int d = 0; d < NUM_DETECTORS; ++d) {
+      buf[d] -= dark_[d];
+      if (buf[d] < 0.0f) buf[d] = 0.0f;
     }
     emitObservation(laser, buf, NUM_DETECTORS, true);
   }
