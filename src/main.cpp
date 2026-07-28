@@ -1,15 +1,13 @@
 /**
  * optical-body-s3 / main.cpp
  *
- * Boot path:
+ * First milestone boot path:
  *   1. Init drivers + FRAM + SD
- *   2. Clean calibration (whatsinthebox):
- *        dark frame → one-hot ExcitationSequence → dark-corrected matrix
- *        → OpticalFingerprint → FRAM
- *   3. Passive observation loop (still one source at a time)
- *
- * Real BPW34 via ADS1115 by default.
- * GPIO pin map can come later — lasers.fire(id) / detectors.readAll stay stable.
+ *   2. If identity exists → verifyIdentity (sparse probe)
+ *        Body unchanged  → skip full map
+ *        Geometry drift  → full clean calibration
+ *   3. If no identity → full clean calibration
+ *   4. Passive observation loop
  */
 
 #include <Arduino.h>
@@ -37,9 +35,23 @@ void setup() {
     while (true) delay(1000);
   }
 
-  Serial.println(F("Hardware ready. Running clean calibration…"));
-  body.runSelfMap();
-  Serial.println(F("Calibration complete. Entering passive observation loop."));
+  bool need_map = true;
+  if (body.hasStoredIdentity()) {
+    bool unchanged = false;
+    body.verifyIdentity(&unchanged, 0.08f);
+    need_map = !unchanged;
+  } else {
+    Serial.println(F("[Boot] no stored identity — first calibration"));
+  }
+
+  if (need_map) {
+    Serial.println(F("[Boot] running clean calibration…"));
+    body.runSelfMap();
+  } else {
+    Serial.println(F("[Boot] identity trusted — skipping full self-map"));
+  }
+
+  Serial.println(F("[Boot] entering passive observation loop"));
 }
 
 void loop() {
