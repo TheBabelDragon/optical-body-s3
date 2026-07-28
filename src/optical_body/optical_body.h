@@ -11,32 +11,26 @@
 /**
  * OpticalBody
  *
- * Boot path for first milestone:
- *   load identity → verifyIdentity (probe) → body unchanged | drift → self-map if needed
- *
- * Calibration:
- *   dark frame → ExcitationSequence → OpticalFingerprint → FRAM
+ * Boot: load identity → verify → map if needed
+ * Live: passive cycle OR host EXCITE <id> (shaped light)
  */
 class OpticalBody {
 public:
   explicit OpticalBody(const char* node_id);
 
   bool begin();
-
-  /**
-   * Probe a few sources against stored expected responses.
-   * Returns mean residual (0 = perfect match).
-   * Sets out_unchanged true when residual below threshold.
-   */
   float verifyIdentity(bool* out_unchanged, float threshold = 0.08f);
-
   void runSelfMap();
   void tickPassive();
+
+  /** Fire one source, dark-correct, emit observation. Host-shaped light. */
+  bool exciteOnce(uint16_t laser_id);
 
   const char* nodeId() const { return node_id_; }
   bool isCalibrated() const { return calibrated_; }
   bool hasStoredIdentity() const { return identity_.hasIdentity(); }
   const OpticalFingerprint& fingerprint() const { return fingerprint_; }
+  int numLasers() const { return NUM_LASERS; }
 
 private:
   const char* node_id_;
