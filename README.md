@@ -21,18 +21,35 @@ The S3’s job:
 - Report health
 - Execute calibration / self-map sequences
 - Maintain local identity (node_id + geometry fingerprint)
+- Own working RAM + FRAM identity + (optional) MicroSD experience archive
 
 MetaField’s job (elsewhere):
 - Infer geometry
 - Learn transfer behavior
-- Maintain attractors
+- Maintain attractors + **Field Memory** (episodic)
 - Calculate confidence / anomaly
 - Decide what is interesting
 
 Companion docs in [metafield](https://github.com/TheBabelDragon/metafield):
 - `PHYSICAL_FIELD_SUBSTRATE.md`
+- `MEMORY_ARCHITECTURE.md` ← three-tier memory
 - `schemas/field_observation.py`
+- `schemas/field_memory.py`
 - Issue #1 (Phase 0)
+
+---
+
+## Memory layers (this node owns two of them)
+
+```
+FRAM (MB85RC256V)     → “Who am I?”          identity + calibration
+MicroSD               → experience archive   JSONL logs, history
+ESP32 RAM / PSRAM     → current thought      laser state, detector frame
+```
+
+MetaField owns the third layer (episodic Field Memory).
+
+See `MEMORY_ARCHITECTURE.md` in the metafield repo for the full rationale.
 
 ---
 
@@ -60,12 +77,12 @@ BPW34 → ADS1115 (I2C) via CD74HC4067 mux
         (optional parallel LM393 event path for fast triggers)
 ```
 
-**Expansion**
+**Expansion / memory**
 ```
-MCP23017 — laser enables, status lines, calibration controls
+MCP23017     — laser enables, status lines, calibration controls
+MB85RC256V   — FRAM identity (persistent calibration)
+MicroSD      — experience archive (JSONL)
 ```
-
-FRAM (if present) for persistent geometry fingerprint / identity.
 
 ---
 
@@ -79,13 +96,14 @@ src/
   drivers/
     laser_matrix.cpp / .h
     bpw34_reader.cpp / .h
-    ads1115_manager.cpp / .h
     mux_controller.cpp / .h
+  memory/
+    fram_identity.cpp / .h     ← persistent “Who am I?”
+    sd_archive.cpp / .h        ← experience archive
   calibration/
-    excitation_sequence.cpp / .h
     transfer_matrix.cpp / .h
   protocol/
-    field_observation.cpp / .h
+    field_observation.h
     json_encoder.cpp / .h
 ```
 
@@ -102,9 +120,10 @@ Laser 0 → recording…
 Laser 1 → recording…
 …
 Geometry fingerprint created.
+[FRAM] identity saved
 ```
 
-That fingerprint (`M[laser][detector]`) is the optical identity of the structure.
+That fingerprint (`M[laser][detector]`) is the optical identity of the structure and is intended to live in FRAM.
 
 ---
 
@@ -116,6 +135,8 @@ PlatformIO project. Target: ESP32-S3.
 pio run -t upload
 pio device monitor
 ```
+
+Optional: define `OPTICAL_USE_SYNTHETIC` in `platformio.ini` only when detectors are not yet wired.
 
 ---
 
