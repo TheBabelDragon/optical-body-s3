@@ -17,6 +17,16 @@ void OpticalBody::clearTransfer() {
 }
 
 bool OpticalBody::begin() {
+  // Memory layers first — non-fatal if absent
+  identity_.begin(0x50);   // MB85RC256V default
+  archive_.begin(5);       // MicroSD CS pin — adjust to wiring
+
+  if (identity_.hasIdentity()) {
+    Serial.print(F("[OpticalBody] loaded identity  geometry_version="));
+    Serial.println(identity_.geometryVersion());
+    calibrated_ = true;
+  }
+
   if (!lasers.begin()) {
     Serial.println(F("[OpticalBody] laser matrix init failed"));
     return false;
@@ -57,6 +67,7 @@ void OpticalBody::runSelfMap() {
 
     for (int d = 0; d < NUM_DETECTORS; ++d) {
       transfer_[laser][d] = buf[d];
+      identity_.setExpected((uint16_t)laser, (uint16_t)d, buf[d]);
     }
 
     // Emit a Phase-0 observation for this excitation so the log is complete
@@ -64,8 +75,17 @@ void OpticalBody::runSelfMap() {
     Serial.println(F(" ok"));
   }
 
+  // Persist optical identity
+  identity_.setGeometryVersion("selfmap-v1");
+  identity_.save();
+
+  // Calibration event into experience archive
+  String cal_event = String("{\"event\":\"self_map_complete\",\"node\":\"") +
+                     node_id_ + "\",\"geometry_version\":\"selfmap-v1\"}";
+  archive_.appendCalibrationEvent(cal_event);
+
   calibrated_ = true;
-  Serial.println(F("[OpticalBody] Geometry fingerprint created."));
+  Serial.println(F("[OpticalBody] Geometry fingerprint created + saved to FRAM."));
   Serial.println(F("[OpticalBody] === Self-map complete ==="));
 }
 
@@ -100,12 +120,31 @@ void OpticalBody::emitObservation(uint16_t laser_id, const float* detectors, siz
     FieldRegion r;
     r.region     = "detector_" + String(i < 10 ? "0" : "") + String(i);
     r.observed   = detectors[i];
-    r.expected   = NAN;                     // filled once transfer matrix is trusted
+
+    // Fill expected from FRAM identity when available
+    if (identity_.hasIdentity() || calibrated_) {
+      r.expected = identity_.getExpected(laser_id, (uint16_t)i);
+      if (r.expected == 0.0f && transfer_[laser_id % NUM_LASERS][i] != 0.0f) {
+        r.expected = transfer_[laser_id % NUM_LASERS][i];
+      }
+      // Simple anomaly: absolute residual
+      if (!isnan(r.expected)) {
+        r.anomaly = fabsf(r.observed - r.expected);
+        if (r.anomaly > 1.0f) r.anomaly = 1.0f;
+      } else {
+        r.expected = NAN;
+        r.anomaly  = 0.0f;
+      }
+    } else {
+      r.expected = NAN;
+      r.anomaly  = 0.0f;
+    }
+
     r.confidence = (detectors[i] > 0.05f) ? 0.9f : 0.5f;
-    r.anomaly    = 0.0f;
     obs.regions.push_back(r);
   }
 
   String json = encodeFieldObservation(obs);
   Serial.println(json);                     // Aurora / host can scrape Serial for now
+  archive_.appendObservation(json);         // experience archive (no-op until SD wired)
 }
