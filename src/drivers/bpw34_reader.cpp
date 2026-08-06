@@ -1,11 +1,27 @@
 #include "bpw34_reader.h"
+#include "mux_controller.h"
 
 #ifdef OPTICAL_USE_SYNTHETIC
   // pure software fallback — only for board bring-up without detectors
 #else
   #include <Adafruit_ADS1X15.h>
-  // TODO: also wire CD74HC4067 mux select pins + multiple ADS1115 if needed
   static Adafruit_ADS1115 ads;
+  static MuxController mux;
+#endif
+
+// ---------------------------------------------------------------------------
+// Real path configuration
+// ---------------------------------------------------------------------------
+// The mux common output is expected on ADS1115 channel 0 (A0).
+// Change this if you wire SIG to a different pin.
+#ifndef ADS_MUX_CHANNEL
+#define ADS_MUX_CHANNEL 0
+#endif
+
+// Rough full-scale for normalization. Tune after measuring the actual
+// BPW34 + transimpedance front-end (dark / illuminated voltages).
+#ifndef BPW34_FULL_SCALE_V
+#define BPW34_FULL_SCALE_V 3.3f
 #endif
 
 bool BPW34Reader::begin() {
@@ -13,13 +29,24 @@ bool BPW34Reader::begin() {
   Serial.println(F("[BPW34] SYNTHETIC mode (OPTICAL_USE_SYNTHETIC)"));
   return true;
 #else
+  if (!mux.begin()) {
+    Serial.println(F("[BPW34] MuxController failed"));
+    return false;
+  }
+
   // Real path — ADS1115 on default I2C address 0x48
   if (!ads.begin(0x48)) {
     Serial.println(F("[BPW34] ADS1115 not found at 0x48 — check wiring"));
     return false;
   }
   ads.setGain(GAIN_ONE);          // ±4.096 V — adjust to your front-end
-  Serial.println(F("[BPW34] ADS1115 ready (real values)"));
+  // Optional: ads.setDataRate(RATE_ADS1115_128SPS);  // default is fine
+
+  Serial.println(F("[BPW34] ADS1115 + CD74HC4067 ready (real values)"));
+  Serial.print(F("[BPW34] detectors="));
+  Serial.print(num_detectors_);
+  Serial.print(F("  mux channels=16  ADS ch="));
+  Serial.println(ADS_MUX_CHANNEL);
   return true;
 #endif
 }
@@ -38,17 +65,18 @@ bool BPW34Reader::readReal(float* out, size_t max_n) {
 #ifndef OPTICAL_USE_SYNTHETIC
   size_t n = min(max_n, (size_t)num_detectors_);
 
-  // Phase-0 simplification: read the four differential / single-ended
-  // channels of one ADS1115 and replicate / pad for the rest.
-  // Real system will walk the CD74HC4067 mux and possibly multiple ADS1115s.
   for (size_t i = 0; i < n; ++i) {
-    // Map detector index onto available ADC channels for now
-    int16_t raw = ads.readADC_SingleEnded(i % 4);
-    // Convert to volts then normalize roughly into 0..1
-    // (exact scaling depends on the analog front-end around each BPW34)
+    // Select mux channel (0..15). Extra detectors wrap for now.
+    uint8_t ch = (uint8_t)(i % 16);
+    mux.select(ch);
+
+    // Read the single ADS channel that the mux SIG feeds into
+    int16_t raw = ads.readADC_SingleEnded(ADS_MUX_CHANNEL);
     float volts = ads.computeVolts(raw);
-    // Placeholder normalization — tune once the front-end is characterized
-    float norm = constrain(volts / 3.3f, 0.0f, 1.0f);
+
+    // Placeholder normalization — replace with calibrated dark/illuminated
+    // scale once the analog front-end is characterized.
+    float norm = constrain(volts / BPW34_FULL_SCALE_V, 0.0f, 1.0f);
     out[i] = norm;
   }
   return true;
