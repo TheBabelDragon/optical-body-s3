@@ -26,6 +26,9 @@ public:
   /** Fire one source, dark-correct, emit observation. Host-shaped light. */
   bool exciteOnce(uint16_t laser_id);
 
+  /** Bring-up: print raw ADC volts for first channels. */
+  void dumpRaw(uint8_t count = 8);
+
   const char* nodeId() const { return node_id_; }
   bool isCalibrated() const { return calibrated_; }
   bool hasStoredIdentity() const { return identity_.hasIdentity(); }
