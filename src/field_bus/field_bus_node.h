@@ -7,21 +7,28 @@
 /**
  * FieldBusNode — common bus layer for every ESP32 on the Field Bus.
  *
+ * Protocol is CAN-FD native (full 8-byte header + payload, up to 64 bytes).
+ *
+ * Transport:
+ *   - Current bring-up path uses ESP32 TWAI (classic CAN, 8-byte limit).
+ *   - Production path: external CAN-FD controller (MCP2518FD / TCAN4550 / …)
+ *     over SPI. The pack/unpack API is already FD-sized; only the transmit
+ *     path needs to change when the FD hardware is wired.
+ *
  * Optical body uses node_id = FB_NODE_OPTICAL (0x02).
  * Lifecycle: begin() → sendHello() → periodic sendStatus() + poll().
  *
- * TWAI pins are overridable via build flags:
+ * TWAI pins (bring-up only):
  *   -D FB_TWAI_TX_PIN=1  -D FB_TWAI_RX_PIN=2
- *
- * If the transceiver is missing, begin() still returns true but
- * isOnline() stays false — serial path continues to work.
  */
 class FieldBusNode {
 public:
+  static constexpr size_t MAX_FRAME = 64;   // CAN-FD
+
   explicit FieldBusNode(uint8_t node_id = FB_NODE_OPTICAL);
 
   bool begin();
-  void poll();                    // call from loop — handles RX + heartbeat timer
+  void poll();
 
   bool sendHello(uint16_t firmware_ver, uint8_t capabilities);
   bool sendStatus(uint8_t state, uint16_t error_flags = 0);
