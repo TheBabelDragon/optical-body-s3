@@ -74,7 +74,7 @@ Expected boot story:
 
 ```
 optical-body-s3  —  MetaField body
-cmds: EXCITE <id> | MAP | VERIFY | PASSIVE
+cmds: EXCITE <id> | MAP | VERIFY | PASSIVE | DUMP
 … identity verify or first clean calibration …
 passive loop
 ```
@@ -106,6 +106,17 @@ In `platformio.ini`, uncomment:
 
 Then rebuild / upload. Packets still flow; ADC path is faked.
 
+### Real ADC path (default)
+
+The firmware now drives a CD74HC4067 + ADS1115 by default.
+
+- Mux S0–S3 → GPIO 4/5/6/7 (overridable)
+- Mux EN → GPIO 15 (or tie to GND and set `MUX_EN_PIN=-1`)
+- Mux SIG → ADS1115 A0
+- ADS1115 ADDR → GND (address 0x48)
+
+Once wired, type `DUMP` in the serial monitor to print raw volts for the first 8 channels. Useful for verifying the analog path before running MAP.
+
 ---
 
 ## Dual detector streams
@@ -127,6 +138,7 @@ EXCITE <id>   shape that source once
 MAP           full clean calibration
 VERIFY        identity probe vs FRAM
 PASSIVE       resume cyclic scan
+DUMP          print raw ADC volts (bring-up diagnostic)
 ```
 
 ---

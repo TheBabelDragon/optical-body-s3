@@ -62,6 +62,10 @@ bool OpticalBody::begin() {
   return true;
 }
 
+void OpticalBody::dumpRaw(uint8_t count) {
+  detectors.dumpRaw(count);
+}
+
 float OpticalBody::verifyIdentity(bool* out_unchanged, float threshold) {
   if (out_unchanged) *out_unchanged = false;
 
@@ -347,7 +351,6 @@ void OpticalBody::emitObservation(uint16_t laser_id, const float* detectors, siz
   archive_.appendObservation(json);
 
   // 2) Compact Field Body Protocol line (shared with Echo Grid)
-  //    Hosts that only understand the minimal contract can still close the loop.
   Serial.print(F("OBS {"));
   Serial.print(F("\"body_id\":\"")); Serial.print(node_id_); Serial.print(F("\","));
   Serial.print(F("\"body_type\":\"optical\","));

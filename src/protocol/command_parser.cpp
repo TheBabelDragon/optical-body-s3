@@ -22,6 +22,10 @@ bool pollCommand(ParsedCommand& out) {
     out.type = BodyCommand::Passive;
     return true;
   }
+  if (line.equalsIgnoreCase("DUMP")) {
+    out.type = BodyCommand::Dump;
+    return true;
+  }
   if (line.startsWith("EXCITE") || line.startsWith("excite")) {
     int sp = line.indexOf(' ');
     if (sp < 0) return false;

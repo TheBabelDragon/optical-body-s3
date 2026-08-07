@@ -9,6 +9,7 @@
  *   MAP             run full clean calibration
  *   VERIFY          run identity probe
  *   PASSIVE         resume cyclic passive loop (default)
+ *   DUMP            print raw ADC volts (bring-up diagnostic)
  *
  * This is the hinge that closes the circle:
  * MetaField / active_probe decides → Aurora or host sends EXCITE → body shapes light.
@@ -19,6 +20,7 @@ enum class BodyCommand : uint8_t {
   Map,
   Verify,
   Passive,
+  Dump,
 };
 
 struct ParsedCommand {
