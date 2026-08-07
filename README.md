@@ -75,6 +75,9 @@ Expected boot story:
 ```
 optical-body-s3  —  MetaField body
 cmds: EXCITE <id> | MAP | VERIFY | PASSIVE | DUMP
+[Laser] pin map (dictated at compile time):
+  laser 00 → not wired
+  …
 … identity verify or first clean calibration …
 passive loop
 ```
@@ -108,14 +111,30 @@ Then rebuild / upload. Packets still flow; ADC path is faked.
 
 ### Real ADC path (default)
 
-The firmware now drives a CD74HC4067 + ADS1115 by default.
+The firmware drives a CD74HC4067 + ADS1115 by default.
 
 - Mux S0–S3 → GPIO 4/5/6/7 (overridable)
 - Mux EN → GPIO 15 (or tie to GND and set `MUX_EN_PIN=-1`)
 - Mux SIG → ADS1115 A0
 - ADS1115 ADDR → GND (address 0x48)
 
-Once wired, type `DUMP` in the serial monitor to print raw volts for the first 8 channels. Useful for verifying the analog path before running MAP.
+Once wired, type `DUMP` in the serial monitor to print raw volts for the first 8 channels.
+
+### Pin map philosophy
+
+**Pins are dictated at compile time**, not assigned interactively at runtime.
+
+This keeps the body boring, deterministic, and safe. Edit `platformio.ini` (or a board-specific environment) and rebuild when the physical wiring changes. The boot log always prints the active map so there is never any ambiguity.
+
+Example laser overrides:
+
+```ini
+-D LASER_PIN_0=10
+-D LASER_PIN_1=11
+; …
+```
+
+Any laser left at the default (`-1`) is treated as “not wired” and only logged.
 
 ---
 
