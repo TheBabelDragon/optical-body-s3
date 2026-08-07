@@ -53,7 +53,6 @@ void LaserMatrix::initPinMap() {
   pins_[9]  = LASER_PIN_9;
   pins_[10] = LASER_PIN_10;
   pins_[11] = LASER_PIN_11;
-  // remaining stay -1
   for (int i = 12; i < MAX_LASERS; ++i) pins_[i] = -1;
 }
 
@@ -61,17 +60,25 @@ bool LaserMatrix::begin() {
   initPinMap();
 
   int wired = 0;
+  Serial.println(F("[Laser] pin map (dictated at compile time):"));
   for (int i = 0; i < num_lasers_; ++i) {
+    Serial.print(F("  laser "));
+    if (i < 10) Serial.print('0');
+    Serial.print(i);
+    Serial.print(F(" → "));
     if (pins_[i] >= 0) {
       pinMode((uint8_t)pins_[i], OUTPUT);
       digitalWrite((uint8_t)pins_[i], LOW);
+      Serial.print(F("GPIO "));
+      Serial.println(pins_[i]);
       wired++;
+    } else {
+      Serial.println(F("not wired"));
     }
   }
-
   Serial.print(F("[Laser] matrix ready  lasers="));
   Serial.print(num_lasers_);
-  Serial.print(F("  wired pins="));
+  Serial.print(F("  wired="));
   Serial.println(wired);
 
   allOff();
@@ -96,7 +103,6 @@ void LaserMatrix::fire(uint16_t laser_id) {
     digitalWrite((uint8_t)pin, HIGH);
   }
 
-  // Always log so the self-map sequence is visible even before pins are assigned
   Serial.print(F("[Laser] fire "));
   Serial.print(laser_id);
   if (pin < 0) Serial.print(F(" (pin not wired)"));
