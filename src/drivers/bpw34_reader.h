@@ -5,38 +5,35 @@
 /**
  * BPW34Reader
  *
- * Reads the detector bank via ADS1115 + one or more CD74HC4067 muxes.
+ * Analog perception path: up to 4× ADS1115 + up to 4× CD74HC4067.
  *
- * Default (Phase 0): one mux → ADS1115 A0 → 16 unique channels.
- * Detectors 16-19 currently wrap the first mux (matches OpticalBody::NUM_DETECTORS=20).
+ * Mapping (when fully populated):
+ *   detectors  0-15 → ADS0 (0x48) + mux0
+ *   detectors 16-31 → ADS1 (0x49) + mux1
+ *   detectors 32-47 → ADS2 (0x4A) + mux2
+ *   detectors 48-63 → ADS3 (0x4B) + mux3
  *
- * You already have multiple blue mux + ADS1115 boards.
- * The MuxController constructor accepts explicit pins, so adding a second
- * mux later is just another instance + a different ADS channel or EN pin.
+ * OpticalBody currently asks for 20 detectors, so the first two
+ * ADS+mux pairs are enough. Extra boards can sit unpopulated.
  *
- * Synthetic path remains available with -D OPTICAL_USE_SYNTHETIC=1.
+ * Synthetic path still available with -D OPTICAL_USE_SYNTHETIC=1.
  */
 class BPW34Reader {
 public:
+  static constexpr int MAX_ADS = 4;
+  static constexpr int CHANNELS_PER_MUX = 16;
+
   bool begin();
 
-  /**
-   * Read all detectors into out[] (size == numDetectors()).
-   * Values normalized roughly 0..1.
-   */
   bool readAll(float* out, size_t max_n);
-
-  /**
-   * Bring-up helper: print raw volts for the first `count` channels.
-   * Call this from setup() or a serial command to verify wiring
-   * before running dark-frame / self-map.
-   */
-  void dumpRaw(uint8_t count = 8);
+  void dumpRaw(uint8_t count = 16);
 
   int numDetectors() const { return num_detectors_; }
+  int numAdsFound() const { return num_ads_; }
 
 private:
-  int num_detectors_ = 20;
+  int num_detectors_ = 20;   // matches OpticalBody for now
+  int num_ads_ = 0;
 
   bool readReal(float* out, size_t max_n);
   bool readSynthetic(float* out, size_t max_n, uint16_t laser_hint = 0);

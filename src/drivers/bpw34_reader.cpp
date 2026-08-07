@@ -2,42 +2,79 @@
 #include "mux_controller.h"
 
 #ifdef OPTICAL_USE_SYNTHETIC
-  // pure software fallback
 #else
   #include <Adafruit_ADS1X15.h>
-  static Adafruit_ADS1115 ads;
-  static MuxController mux;          // default pins from build flags
-#endif
 
-#ifndef ADS_MUX_CHANNEL
-#define ADS_MUX_CHANNEL 0            // A0 receives the mux SIG
+  static Adafruit_ADS1115 ads[BPW34Reader::MAX_ADS];
+  static MuxController mux[BPW34Reader::MAX_ADS];
+
+  // Default EN pins for extra muxes (override with build flags if needed)
+  #ifndef MUX0_EN_PIN
+  #define MUX0_EN_PIN MUX_EN_PIN   // usually 15
+  #endif
+  #ifndef MUX1_EN_PIN
+  #define MUX1_EN_PIN 16
+  #endif
+  #ifndef MUX2_EN_PIN
+  #define MUX2_EN_PIN 17
+  #endif
+  #ifndef MUX3_EN_PIN
+  #define MUX3_EN_PIN 18
+  #endif
 #endif
 
 #ifndef BPW34_FULL_SCALE_V
-#define BPW34_FULL_SCALE_V 3.3f      // tune after front-end characterization
+#define BPW34_FULL_SCALE_V 3.3f
 #endif
+
+// ADS1115 addresses when ADDR is tied to GND / VDD / SDA / SCL
+static const uint8_t ADS_ADDR[4] = { 0x48, 0x49, 0x4A, 0x4B };
 
 bool BPW34Reader::begin() {
 #ifdef OPTICAL_USE_SYNTHETIC
   Serial.println(F("[BPW34] SYNTHETIC mode"));
   return true;
 #else
-  if (!mux.begin()) {
-    Serial.println(F("[BPW34] MuxController failed"));
+  // Shared select lines; individual EN pins
+  const int en_pins[MAX_ADS] = {
+    MUX0_EN_PIN, MUX1_EN_PIN, MUX2_EN_PIN, MUX3_EN_PIN
+  };
+
+  num_ads_ = 0;
+  for (int i = 0; i < MAX_ADS; ++i) {
+    // Reconstruct mux with shared S0-S3 + this board's EN
+    mux[i] = MuxController(MUX_S0_PIN, MUX_S1_PIN, MUX_S2_PIN, MUX_S3_PIN, en_pins[i]);
+    if (!mux[i].begin()) {
+      Serial.print(F("[BPW34] mux"));
+      Serial.print(i);
+      Serial.println(F(" init failed"));
+      continue;
+    }
+
+    if (!ads[i].begin(ADS_ADDR[i])) {
+      Serial.print(F("[BPW34] ADS1115 not found at 0x"));
+      Serial.println(ADS_ADDR[i], HEX);
+      // still count the mux as present; we just won't read this ADS
+      continue;
+    }
+    ads[i].setGain(GAIN_ONE);
+    num_ads_++;
+    Serial.print(F("[BPW34] ADS"));
+    Serial.print(i);
+    Serial.print(F(" @0x"));
+    Serial.print(ADS_ADDR[i], HEX);
+    Serial.println(F(" ready"));
+  }
+
+  if (num_ads_ == 0) {
+    Serial.println(F("[BPW34] no ADS1115 found — check wiring / ADDR pins"));
     return false;
   }
 
-  if (!ads.begin(0x48)) {
-    Serial.println(F("[BPW34] ADS1115 not found at 0x48 — check wiring / ADDR pin"));
-    return false;
-  }
-  ads.setGain(GAIN_ONE);             // ±4.096 V
-
-  Serial.println(F("[BPW34] ADS1115 + CD74HC4067 ready (real values)"));
-  Serial.print(F("[BPW34] detectors="));
-  Serial.print(num_detectors_);
-  Serial.print(F("  first 16 unique via mux  ADS ch="));
-  Serial.println(ADS_MUX_CHANNEL);
+  Serial.print(F("[BPW34] "));
+  Serial.print(num_ads_);
+  Serial.print(F(" ADS1115 active, detectors="));
+  Serial.println(num_detectors_);
   return true;
 #endif
 }
@@ -56,13 +93,31 @@ bool BPW34Reader::readReal(float* out, size_t max_n) {
   size_t n = min(max_n, (size_t)num_detectors_);
 
   for (size_t i = 0; i < n; ++i) {
-    uint8_t ch = (uint8_t)(i % 16);
-    mux.select(ch);
+    int ads_idx = (int)(i / CHANNELS_PER_MUX);
+    uint8_t ch  = (uint8_t)(i % CHANNELS_PER_MUX);
 
-    int16_t raw = ads.readADC_SingleEnded(ADS_MUX_CHANNEL);
-    float volts = ads.computeVolts(raw);
+    if (ads_idx >= num_ads_ || ads_idx >= MAX_ADS) {
+      // fall back to first ADS + wrap (keeps old behaviour for partial hardware)
+      ads_idx = 0;
+      ch = (uint8_t)(i % CHANNELS_PER_MUX);
+    }
+
+    mux[ads_idx].enable();
+    mux[ads_idx].select(ch);
+
+    // disable the others so only one mux SIG is active
+    for (int j = 0; j < MAX_ADS; ++j) {
+      if (j != ads_idx) mux[j].disable();
+    }
+
+    int16_t raw = ads[ads_idx].readADC_SingleEnded(0);  // SIG on A0
+    float volts = ads[ads_idx].computeVolts(raw);
     out[i] = constrain(volts / BPW34_FULL_SCALE_V, 0.0f, 1.0f);
   }
+
+  // leave first mux enabled as a sane default
+  for (int j = 1; j < MAX_ADS; ++j) mux[j].disable();
+  mux[0].enable();
   return true;
 #else
   return false;
@@ -73,21 +128,34 @@ void BPW34Reader::dumpRaw(uint8_t count) {
 #ifdef OPTICAL_USE_SYNTHETIC
   Serial.println(F("[BPW34] dumpRaw skipped (synthetic mode)"));
 #else
-  if (count > 16) count = 16;
-  Serial.println(F("[BPW34] raw volts (first channels):"));
+  if (count > 32) count = 32;
+  Serial.println(F("[BPW34] raw volts:"));
   for (uint8_t i = 0; i < count; ++i) {
-    mux.select(i);
-    int16_t raw = ads.readADC_SingleEnded(ADS_MUX_CHANNEL);
-    float v = ads.computeVolts(raw);
-    Serial.print(F("  ch"));
+    int ads_idx = i / CHANNELS_PER_MUX;
+    uint8_t ch  = i % CHANNELS_PER_MUX;
+    if (ads_idx >= num_ads_) break;
+
+    mux[ads_idx].enable();
+    mux[ads_idx].select(ch);
+    for (int j = 0; j < MAX_ADS; ++j)
+      if (j != ads_idx) mux[j].disable();
+
+    int16_t raw = ads[ads_idx].readADC_SingleEnded(0);
+    float v = ads[ads_idx].computeVolts(raw);
+    Serial.print(F("  d"));
     if (i < 10) Serial.print('0');
     Serial.print(i);
-    Serial.print(F(": "));
+    Serial.print(F(" (ADS"));
+    Serial.print(ads_idx);
+    Serial.print(F(" ch"));
+    Serial.print(ch);
+    Serial.print(F("): "));
     Serial.print(v, 4);
-    Serial.print(F(" V  (raw="));
-    Serial.print(raw);
-    Serial.println(F(")"));
+    Serial.print(F(" V  raw="));
+    Serial.println(raw);
   }
+  mux[0].enable();
+  for (int j = 1; j < MAX_ADS; ++j) mux[j].disable();
 #endif
 }
 
