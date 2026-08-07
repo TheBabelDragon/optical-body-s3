@@ -5,30 +5,27 @@
 #include "can_codec.h"
 
 /**
- * FieldBusNode — common bus layer for every ESP32 on the Field Bus.
+ * FieldBusNode — common bus layer for the six-node Field Bus.
  *
- * Protocol is CAN-FD native (full 8-byte header + payload, up to 64 bytes).
+ * Hardware:
+ *   ESP32 TWAI  →  Waveshare SN65HVD230  →  CANH/CANL
+ *   Host PC     →  DSD TECH SH-C31G (classic mode)
  *
- * Transport:
- *   - Current bring-up path uses ESP32 TWAI (classic CAN, 8-byte limit).
- *   - Production path: external CAN-FD controller (MCP2518FD / TCAN4550 / …)
- *     over SPI. The pack/unpack API is already FD-sized; only the transmit
- *     path needs to change when the FD hardware is wired.
+ * Classic CAN, 500 kbit/s, 29-bit extended IDs, 8-byte data.
+ * Type / source / target live in the ID; data is pure payload.
  *
- * Optical body uses node_id = FB_NODE_OPTICAL (0x02).
- * Lifecycle: begin() → sendHello() → periodic sendStatus() + poll().
+ * Optical node ID = 0x02.
  *
- * TWAI pins (bring-up only):
- *   -D FB_TWAI_TX_PIN=1  -D FB_TWAI_RX_PIN=2
+ * TWAI pins (match your wiring):
+ *   -D FB_TWAI_TX_PIN=1
+ *   -D FB_TWAI_RX_PIN=2
  */
 class FieldBusNode {
 public:
-  static constexpr size_t MAX_FRAME = 64;   // CAN-FD
-
   explicit FieldBusNode(uint8_t node_id = FB_NODE_OPTICAL);
 
   bool begin();
-  void poll();
+  void poll();   // RX + 500 ms heartbeat — call from loop()
 
   bool sendHello(uint16_t firmware_ver, uint8_t capabilities);
   bool sendStatus(uint8_t state, uint16_t error_flags = 0);
@@ -49,8 +46,6 @@ private:
   bool     time_synced_ = false;
   uint32_t network_time_us_ = 0;
   uint32_t last_heartbeat_ms_ = 0;
-  uint16_t firmware_ver_ = 1;
-  uint8_t  capabilities_ = 0;
 
   bool transmit(uint32_t can_id, const uint8_t *data, uint8_t len);
   void handleFrame(uint32_t id, const uint8_t *data, uint8_t len);
