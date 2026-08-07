@@ -2,10 +2,10 @@
  * optical-body-s3 / main.cpp
  *
  * Boot: identity verify → map only if needed
- * Loop: passive OR host commands (EXCITE / MAP / VERIFY / PASSIVE)
+ * Loop: passive OR host commands (EXCITE / MAP / VERIFY / PASSIVE / DUMP)
  *
  * Closing the circle:
- *   MetaField active_probe → "EXCITE N" on Serial → body shapes that light
+ *   MetaField active_probe → "EXCITE N" on Serial → body shapes light
  */
 
 #include <Arduino.h>
@@ -28,7 +28,7 @@ void setup() {
   Serial.println();
   Serial.println(F("========================================"));
   Serial.println(F("  optical-body-s3  —  MetaField body"));
-  Serial.println(F("  cmds: EXCITE <id> | MAP | VERIFY | PASSIVE"));
+  Serial.println(F("  cmds: EXCITE <id> | MAP | VERIFY | PASSIVE | DUMP"));
   Serial.println(F("========================================"));
   Serial.print(F("Node ID : "));
   Serial.println(OPTICAL_BODY_NODE_ID);
@@ -54,7 +54,7 @@ void setup() {
     Serial.println(F("[Boot] identity trusted — skipping full self-map"));
   }
 
-  Serial.println(F("[Boot] passive loop (send EXCITE n to shape light)"));
+  Serial.println(F("[Boot] passive loop (send EXCITE n / DUMP / etc.)"));
 }
 
 void loop() {
@@ -68,7 +68,7 @@ void loop() {
           Serial.print(F("[CMD] shaping light source "));
           Serial.println(cmd.source_id);
           body.exciteOnce((uint16_t)cmd.source_id);
-          mode = RunMode::Held;  // pause passive until PASSIVE
+          mode = RunMode::Held;
         }
         break;
       case BodyCommand::Map:
@@ -84,6 +84,10 @@ void loop() {
         Serial.println(F("[CMD] passive resume"));
         mode = RunMode::Passive;
         break;
+      case BodyCommand::Dump:
+        Serial.println(F("[CMD] raw ADC dump"));
+        body.dumpRaw(8);
+        break;
       default:
         break;
     }
@@ -93,6 +97,6 @@ void loop() {
     body.tickPassive();
     delay(200);
   } else {
-    delay(50);  // held: wait for next EXCITE / PASSIVE
+    delay(50);
   }
 }
