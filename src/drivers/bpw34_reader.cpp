@@ -6,28 +6,19 @@
   #include <Adafruit_ADS1X15.h>
 
   static Adafruit_ADS1115 ads[BPW34Reader::MAX_ADS];
-  static MuxController mux[BPW34Reader::MAX_ADS];
-
-  // Default EN pins for extra muxes (override with build flags if needed)
-  #ifndef MUX0_EN_PIN
-  #define MUX0_EN_PIN MUX_EN_PIN   // usually 15
-  #endif
-  #ifndef MUX1_EN_PIN
-  #define MUX1_EN_PIN 16
-  #endif
-  #ifndef MUX2_EN_PIN
-  #define MUX2_EN_PIN 17
-  #endif
-  #ifndef MUX3_EN_PIN
-  #define MUX3_EN_PIN 18
-  #endif
+  // Constructed with shared S0-S3; EN set per-board in begin()
+  static MuxController mux[BPW34Reader::MAX_ADS] = {
+    MuxController(MUX_S0_PIN, MUX_S1_PIN, MUX_S2_PIN, MUX_S3_PIN, MUX_EN_PIN),
+    MuxController(MUX_S0_PIN, MUX_S1_PIN, MUX_S2_PIN, MUX_S3_PIN, 16),
+    MuxController(MUX_S0_PIN, MUX_S1_PIN, MUX_S2_PIN, MUX_S3_PIN, 17),
+    MuxController(MUX_S0_PIN, MUX_S1_PIN, MUX_S2_PIN, MUX_S3_PIN, 18)
+  };
 #endif
 
 #ifndef BPW34_FULL_SCALE_V
 #define BPW34_FULL_SCALE_V 3.3f
 #endif
 
-// ADS1115 addresses when ADDR is tied to GND / VDD / SDA / SCL
 static const uint8_t ADS_ADDR[4] = { 0x48, 0x49, 0x4A, 0x4B };
 
 bool BPW34Reader::begin() {
@@ -35,15 +26,9 @@ bool BPW34Reader::begin() {
   Serial.println(F("[BPW34] SYNTHETIC mode"));
   return true;
 #else
-  // Shared select lines; individual EN pins
-  const int en_pins[MAX_ADS] = {
-    MUX0_EN_PIN, MUX1_EN_PIN, MUX2_EN_PIN, MUX3_EN_PIN
-  };
-
   num_ads_ = 0;
+
   for (int i = 0; i < MAX_ADS; ++i) {
-    // Reconstruct mux with shared S0-S3 + this board's EN
-    mux[i] = MuxController(MUX_S0_PIN, MUX_S1_PIN, MUX_S2_PIN, MUX_S3_PIN, en_pins[i]);
     if (!mux[i].begin()) {
       Serial.print(F("[BPW34] mux"));
       Serial.print(i);
@@ -54,7 +39,6 @@ bool BPW34Reader::begin() {
     if (!ads[i].begin(ADS_ADDR[i])) {
       Serial.print(F("[BPW34] ADS1115 not found at 0x"));
       Serial.println(ADS_ADDR[i], HEX);
-      // still count the mux as present; we just won't read this ADS
       continue;
     }
     ads[i].setGain(GAIN_ONE);
@@ -70,6 +54,10 @@ bool BPW34Reader::begin() {
     Serial.println(F("[BPW34] no ADS1115 found — check wiring / ADDR pins"));
     return false;
   }
+
+  // Leave only the first mux enabled
+  for (int j = 1; j < MAX_ADS; ++j) mux[j].disable();
+  mux[0].enable();
 
   Serial.print(F("[BPW34] "));
   Serial.print(num_ads_);
@@ -97,25 +85,23 @@ bool BPW34Reader::readReal(float* out, size_t max_n) {
     uint8_t ch  = (uint8_t)(i % CHANNELS_PER_MUX);
 
     if (ads_idx >= num_ads_ || ads_idx >= MAX_ADS) {
-      // fall back to first ADS + wrap (keeps old behaviour for partial hardware)
       ads_idx = 0;
       ch = (uint8_t)(i % CHANNELS_PER_MUX);
     }
 
-    mux[ads_idx].enable();
+    // Only one mux SIG active at a time
+    for (int j = 0; j < MAX_ADS; ++j) {
+      if (j == ads_idx) mux[j].enable();
+      else              mux[j].disable();
+    }
     mux[ads_idx].select(ch);
 
-    // disable the others so only one mux SIG is active
-    for (int j = 0; j < MAX_ADS; ++j) {
-      if (j != ads_idx) mux[j].disable();
-    }
-
-    int16_t raw = ads[ads_idx].readADC_SingleEnded(0);  // SIG on A0
+    int16_t raw = ads[ads_idx].readADC_SingleEnded(0);
     float volts = ads[ads_idx].computeVolts(raw);
     out[i] = constrain(volts / BPW34_FULL_SCALE_V, 0.0f, 1.0f);
   }
 
-  // leave first mux enabled as a sane default
+  // restore default: mux0 enabled
   for (int j = 1; j < MAX_ADS; ++j) mux[j].disable();
   mux[0].enable();
   return true;
@@ -135,10 +121,11 @@ void BPW34Reader::dumpRaw(uint8_t count) {
     uint8_t ch  = i % CHANNELS_PER_MUX;
     if (ads_idx >= num_ads_) break;
 
-    mux[ads_idx].enable();
+    for (int j = 0; j < MAX_ADS; ++j) {
+      if (j == ads_idx) mux[j].enable();
+      else              mux[j].disable();
+    }
     mux[ads_idx].select(ch);
-    for (int j = 0; j < MAX_ADS; ++j)
-      if (j != ads_idx) mux[j].disable();
 
     int16_t raw = ads[ads_idx].readADC_SingleEnded(0);
     float v = ads[ads_idx].computeVolts(raw);
@@ -154,8 +141,8 @@ void BPW34Reader::dumpRaw(uint8_t count) {
     Serial.print(F(" V  raw="));
     Serial.println(raw);
   }
-  mux[0].enable();
   for (int j = 1; j < MAX_ADS; ++j) mux[j].disable();
+  mux[0].enable();
 #endif
 }
 
