@@ -1,22 +1,28 @@
 /**
  * optical-body-s3 / main.cpp
  *
- * Boot: identity verify → map only if needed
- * Loop: passive OR host commands (EXCITE / MAP / VERIFY / PASSIVE / DUMP)
+ * Boot: Field Bus HELLO → identity verify → map if needed
+ * Loop: passive OR host commands + Field Bus heartbeat / RX
  *
  * Closing the circle:
- *   MetaField active_probe → "EXCITE N" on Serial → body shapes light
+ *   MetaField / coordinator → EXCITE or CAN command → body shapes light
  */
 
 #include <Arduino.h>
 #include "optical_body/optical_body.h"
 #include "protocol/command_parser.h"
+#include "field_bus/field_bus_node.h"
 
 #ifndef OPTICAL_BODY_NODE_ID
 #define OPTICAL_BODY_NODE_ID "optical_s3_001"
 #endif
 
-OpticalBody body(OPTICAL_BODY_NODE_ID);
+#ifndef FB_FIRMWARE_VER
+#define FB_FIRMWARE_VER 1
+#endif
+
+OpticalBody  body(OPTICAL_BODY_NODE_ID);
+FieldBusNode bus(FB_NODE_OPTICAL);   // 0x02
 
 enum class RunMode : uint8_t { Passive, Held };
 static RunMode mode = RunMode::Passive;
@@ -29,13 +35,24 @@ void setup() {
   Serial.println(F("========================================"));
   Serial.println(F("  optical-body-s3  —  MetaField body"));
   Serial.println(F("  cmds: EXCITE <id> | MAP | VERIFY | PASSIVE | DUMP"));
+  Serial.println(F("  bus : Field Bus node 0x02 (Optical)"));
   Serial.println(F("========================================"));
   Serial.print(F("Node ID : "));
   Serial.println(OPTICAL_BODY_NODE_ID);
 
+  // --- Field Bus (non-fatal if no transceiver) ---
+  bus.begin();
+  uint8_t caps = FB_CAP_OPTICAL | FB_CAP_ADC | FB_CAP_SENSOR | FB_CAP_STORAGE;
+  bus.sendHello(FB_FIRMWARE_VER, caps);
+  bus.setState(FB_STATE_BOOT);
+
   if (!body.begin()) {
     Serial.println(F("[FATAL] OpticalBody::begin() failed"));
-    while (true) delay(1000);
+    bus.setState(FB_STATE_ERROR);
+    while (true) {
+      bus.poll();
+      delay(1000);
+    }
   }
 
   bool need_map = true;
@@ -54,10 +71,15 @@ void setup() {
     Serial.println(F("[Boot] identity trusted — skipping full self-map"));
   }
 
-  Serial.println(F("[Boot] passive loop (send EXCITE n / DUMP / etc.)"));
+  bus.setState(FB_STATE_READY);
+  bus.sendStatus(FB_STATE_READY);
+  Serial.println(F("[Boot] passive loop + Field Bus heartbeat"));
 }
 
 void loop() {
+  // Always service the bus
+  bus.poll();
+
   ParsedCommand cmd;
   if (pollCommand(cmd)) {
     switch (cmd.type) {
@@ -95,8 +117,8 @@ void loop() {
 
   if (mode == RunMode::Passive) {
     body.tickPassive();
-    delay(200);
+    delay(50);   // shorter so bus heartbeat stays timely
   } else {
-    delay(50);
+    delay(20);
   }
 }
