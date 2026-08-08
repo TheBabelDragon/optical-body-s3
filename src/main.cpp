@@ -4,11 +4,11 @@
  * Boot: Field Bus HELLO → identity verify → map if needed
  * Loop: passive OR host commands + Field Bus heartbeat / RX
  *
- * Closing the circle:
- *   MetaField / coordinator → EXCITE or CAN command → body shapes light
+ * Pin map: see WIRING_PHASE0.md (dictated, not interactive)
  */
 
 #include <Arduino.h>
+#include <Wire.h>
 #include "optical_body/optical_body.h"
 #include "protocol/command_parser.h"
 #include "field_bus/field_bus_node.h"
@@ -19,6 +19,13 @@
 
 #ifndef FB_FIRMWARE_VER
 #define FB_FIRMWARE_VER 1
+#endif
+
+#ifndef WIRE_SDA_PIN
+#define WIRE_SDA_PIN 8
+#endif
+#ifndef WIRE_SCL_PIN
+#define WIRE_SCL_PIN 9
 #endif
 
 OpticalBody  body(OPTICAL_BODY_NODE_ID);
@@ -40,7 +47,14 @@ void setup() {
   Serial.print(F("Node ID : "));
   Serial.println(OPTICAL_BODY_NODE_ID);
 
-  // --- Field Bus (non-fatal if no transceiver) ---
+  // Locked I²C pins (WIRING_PHASE0.md)
+  Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN);
+  Serial.print(F("[I2C] SDA=GPIO"));
+  Serial.print(WIRE_SDA_PIN);
+  Serial.print(F(" SCL=GPIO"));
+  Serial.println(WIRE_SCL_PIN);
+
+  // --- Field Bus (non-fatal if MCP2518FD not present yet) ---
   bus.begin();
   uint8_t caps = FB_CAP_OPTICAL | FB_CAP_ADC | FB_CAP_SENSOR | FB_CAP_STORAGE;
   bus.sendHello(FB_FIRMWARE_VER, caps);
@@ -77,7 +91,6 @@ void setup() {
 }
 
 void loop() {
-  // Always service the bus
   bus.poll();
 
   ParsedCommand cmd;
@@ -117,7 +130,7 @@ void loop() {
 
   if (mode == RunMode::Passive) {
     body.tickPassive();
-    delay(50);   // shorter so bus heartbeat stays timely
+    delay(50);
   } else {
     delay(20);
   }
