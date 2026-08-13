@@ -57,7 +57,6 @@ bool DisplayUI::begin() {
   _display.println(F("Turn=move Push=ok"));
   _display.display();
   delay(300);
-
   return true;
 }
 
@@ -69,46 +68,79 @@ void DisplayUI::tick(OpticalBody& body) {
   uint32_t now = millis();
 
   /*
-   * Simple menu encoder:
-   * - Watch falling edge on A only (one per detent on typical EC11)
-   * - Direction from B at that moment
-   * - Minimum 50 ms between accepted steps so one click != four steps
+   * Stable-state detent sampler
+   *
+   * 1. Any change on A/B starts a settle timer
+   * 2. When A/B are unchanged for SETTLE_MS, the detent is done
+   * 3. Compare settled state to previous settled state → exactly one step
+   *
+   * This ignores the intermediate gray edges inside the click.
    */
-  static uint8_t lastA = 1;
-  static uint32_t lastStepAt = 0;
+  static const uint32_t SETTLE_MS = 25;
+
+  static uint8_t lastRaw   = 0xFF;
+  static uint8_t settled   = 0;
+  static uint8_t prevSettled = 0;
+  static uint32_t changeAt = 0;
+  static bool     haveSettled = false;
   static uint32_t lastTurnAt = 0;
 
-  uint8_t a = digitalRead(UI_ENC_A_PIN);
-  uint8_t b = digitalRead(UI_ENC_B_PIN);
+  uint8_t raw = (digitalRead(UI_ENC_A_PIN) ? 2 : 0) |
+                (digitalRead(UI_ENC_B_PIN) ? 1 : 0);
 
-  if (lastA == 1 && a == 0 && (now - lastStepAt) >= 50) {
-    lastStepAt = now;
-    lastTurnAt = now;
-
-    int dir = (b == 1) ? 1 : -1;
-
-    if (_page == UiPage::Excite) {
-      _exciteId += dir;
-      if (_exciteId < 0)  _exciteId = 15;
-      if (_exciteId > 15) _exciteId = 0;
-    } else {
-      int p = (int)_page + dir;
-      if (p < 0) p = (int)UiPage::COUNT - 1;
-      if (p >= (int)UiPage::COUNT) p = 0;
-      _page = (UiPage)p;
-    }
-    _lastDraw = 0;
+  if (raw != lastRaw) {
+    lastRaw = raw;
+    changeAt = now;
   }
-  lastA = a;
 
-  // Push = select only. Ignore encoder SW for 200 ms after a turn.
+  if ((now - changeAt) >= SETTLE_MS && raw == lastRaw) {
+    if (!haveSettled) {
+      settled = raw;
+      prevSettled = raw;
+      haveSettled = true;
+    } else if (raw != settled) {
+      // Completed a detent: raw is new stable position
+      // Direction from gray transition between prev and new
+      static const int8_t tab[16] = {
+         0, -1,  1,  0,
+         1,  0,  0, -1,
+        -1,  0,  0,  1,
+         0,  1, -1,  0
+      };
+      int8_t dir = tab[((settled << 2) | raw) & 15];
+      // If table says 0 (invalid jump), fall back to simple bit of A
+      if (dir == 0) {
+        dir = ((raw ^ settled) & 2) ? ((raw & 2) ? 1 : -1) : ((raw & 1) ? 1 : -1);
+      }
+
+      prevSettled = settled;
+      settled = raw;
+      lastTurnAt = now;
+
+      if (dir != 0) {
+        if (_page == UiPage::Excite) {
+          _exciteId += dir;
+          if (_exciteId < 0)  _exciteId = 15;
+          if (_exciteId > 15) _exciteId = 0;
+        } else {
+          int p = (int)_page + dir;
+          if (p < 0) p = (int)UiPage::COUNT - 1;
+          if (p >= (int)UiPage::COUNT) p = 0;
+          _page = (UiPage)p;
+        }
+        _lastDraw = 0;
+      }
+    }
+  }
+
+  // Select only on push; never while settling a turn
   if (now - _lastBtn > 30) {
     _lastBtn = now;
     static bool pc = 1, pr = 1, ps = 1;
     bool c = digitalRead(UI_CONFIRM_PIN);
     bool r = digitalRead(UI_RETURN_PIN);
     bool s = digitalRead(UI_ENC_SW_PIN);
-    bool quiet = (now - lastTurnAt) > 200;
+    bool quiet = (now - lastTurnAt) > 200 && (now - changeAt) > 50;
 
     if (!c && pc && quiet) { onConfirm(); _lastDraw = 0; }
     if (!s && ps && quiet) { onConfirm(); _lastDraw = 0; }
