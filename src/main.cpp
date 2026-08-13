@@ -1,14 +1,55 @@
 /**
  * optical-body-s3 / main.cpp
  *
- * Boot: Field Bus HELLO → identity verify → map if needed
- * Loop: passive OR host commands + Field Bus heartbeat / RX + optional UI
+ * When SAFE_BOOT=1 is defined, this becomes a minimal diagnostic
+ * firmware that only prints to Serial and never touches heavy
+ * peripherals. Use it to prove the flash + USB path works.
  *
- * Pin map: see WIRING_PHASE0.md (dictated, not interactive)
- * UI:    see HARDWARE_PINOUT.md (DKARDU section) when OPTICAL_UI=1
+ * Set SAFE_BOOT=0 (or remove the flag) to restore full functionality.
  */
 
 #include <Arduino.h>
+
+#if defined(SAFE_BOOT) && SAFE_BOOT
+
+// ------------------------------------------------------------------
+// MINIMAL SAFE BOOT — no OpticalBody, no FieldBus, no UI, no I2C
+// ------------------------------------------------------------------
+
+void setup() {
+  Serial.begin(115200);
+  delay(1500);   // extra time for USB-CDC on ESP32-S3
+
+  for (int i = 0; i < 5; i++) {
+    Serial.println();
+  }
+
+  Serial.println(F("========================================"));
+  Serial.println(F("  optical-body-s3  —  SAFE BOOT"));
+  Serial.println(F("  Minimal diagnostic mode"));
+  Serial.println(F("========================================"));
+  Serial.println(F("If you can see this, flash + USB work."));
+  Serial.println(F("Remove -D SAFE_BOOT=1 to restore full firmware."));
+  Serial.flush();
+}
+
+void loop() {
+  static uint32_t last = 0;
+  if (millis() - last > 2000) {
+    last = millis();
+    Serial.print(F("[SAFE] heartbeat  ms="));
+    Serial.println(millis());
+    Serial.flush();
+  }
+  delay(10);
+}
+
+#else
+
+// ------------------------------------------------------------------
+// FULL FIRMWARE
+// ------------------------------------------------------------------
+
 #include <Wire.h>
 #include "optical_body/optical_body.h"
 #include "protocol/command_parser.h"
@@ -31,7 +72,7 @@
 #endif
 
 OpticalBody  body(OPTICAL_BODY_NODE_ID);
-FieldBusNode bus(FB_NODE_OPTICAL);   // 0x02
+FieldBusNode bus(FB_NODE_OPTICAL);
 DisplayUI    ui;
 
 enum class RunMode : uint8_t { Passive, Held };
@@ -39,7 +80,7 @@ static RunMode mode = RunMode::Passive;
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);                       // give USB-CDC time to enumerate
+  delay(1000);
   Serial.println();
   Serial.println(F("========================================"));
   Serial.println(F("  optical-body-s3  —  MetaField body"));
@@ -53,7 +94,6 @@ void setup() {
   Serial.println(OPTICAL_BODY_NODE_ID);
   Serial.flush();
 
-  // Locked I²C pins (WIRING_PHASE0.md)
   Serial.println(F("[Boot] starting I2C..."));
   Serial.flush();
   Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN);
@@ -63,7 +103,6 @@ void setup() {
   Serial.println(WIRE_SCL_PIN);
   Serial.flush();
 
-  // --- Field Bus (non-fatal if MCP2518FD not present yet) ---
   Serial.println(F("[Boot] Field Bus begin..."));
   Serial.flush();
   bus.begin();
@@ -82,7 +121,6 @@ void setup() {
     }
   }
 
-  // Optional UI (shares I²C) — now non-blocking if OLED missing
   Serial.println(F("[Boot] UI begin..."));
   Serial.flush();
   if (!ui.begin()) {
@@ -113,8 +151,6 @@ void setup() {
 
 void loop() {
   bus.poll();
-
-  // --- UI actions (if present) ---
   ui.tick(body);
 
   if (ui.requestExcite()) {
@@ -144,26 +180,19 @@ void loop() {
     ui.clearVerify();
   }
 
-  // Sync mode from UI if it changed
   if (ui.heldMode()) mode = RunMode::Held;
   else if (mode == RunMode::Held && !ui.heldMode()) mode = RunMode::Passive;
 
-  // --- Serial host commands (still supported) ---
   ParsedCommand cmd;
   if (pollCommand(cmd)) {
     switch (cmd.type) {
       case BodyCommand::Excite:
-        if (cmd.source_id < 0 || cmd.source_id >= body.numLasers()) {
-          Serial.println(F("[CMD] EXCITE id out of range"));
-        } else {
-          Serial.print(F("[CMD] shaping light source "));
-          Serial.println(cmd.source_id);
+        if (cmd.source_id >= 0 && cmd.source_id < body.numLasers()) {
           body.exciteOnce((uint16_t)cmd.source_id);
           mode = RunMode::Held;
         }
         break;
       case BodyCommand::Map:
-        Serial.println(F("[CMD] full calibration"));
         body.runSelfMap();
         break;
       case BodyCommand::Verify: {
@@ -172,11 +201,9 @@ void loop() {
         break;
       }
       case BodyCommand::Passive:
-        Serial.println(F("[CMD] passive resume"));
         mode = RunMode::Passive;
         break;
       case BodyCommand::Dump:
-        Serial.println(F("[CMD] raw ADC dump"));
         body.dumpRaw(8);
         break;
       default:
@@ -191,3 +218,5 @@ void loop() {
     delay(20);
   }
 }
+
+#endif // SAFE_BOOT
