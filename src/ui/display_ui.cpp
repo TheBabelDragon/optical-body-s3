@@ -31,6 +31,7 @@ DisplayUI::DisplayUI()
 bool DisplayUI::begin() {
   _instance = this;
 
+  // Buttons / encoder first — these never block
   pinMode(UI_ENC_A_PIN, INPUT_PULLUP);
   pinMode(UI_ENC_B_PIN, INPUT_PULLUP);
   pinMode(UI_ENC_SW_PIN, INPUT_PULLUP);
@@ -40,8 +41,31 @@ bool DisplayUI::begin() {
   _lastEncA = digitalRead(UI_ENC_A_PIN);
   attachInterrupt(digitalPinToInterrupt(UI_ENC_A_PIN), DisplayUI::encIsr, CHANGE);
 
-  if (!_display.begin(UI_OLED_ADDR, true)) {
-    Serial.println(F("[UI] SH1106 begin failed"));
+  Serial.println(F("[UI] probing SH1106 OLED..."));
+  Serial.flush();
+
+  // Give the I2C bus a moment after Wire.begin()
+  delay(50);
+
+  // Adafruit begin() can hang if the device is missing or the bus is stuck.
+  // We attempt it, but if it fails we continue without a display.
+  bool ok = false;
+  {
+    // Simple presence check first
+    Wire.beginTransmission(UI_OLED_ADDR);
+    uint8_t err = Wire.endTransmission();
+    if (err != 0) {
+      Serial.print(F("[UI] OLED not found at 0x"));
+      Serial.println(UI_OLED_ADDR, HEX);
+      Serial.println(F("[UI] continuing without display"));
+      return false;
+    }
+
+    ok = _display.begin(UI_OLED_ADDR, true);
+  }
+
+  if (!ok) {
+    Serial.println(F("[UI] SH1106 begin failed — continuing headless"));
     return false;
   }
 
@@ -52,7 +76,6 @@ bool DisplayUI::begin() {
   _display.println(F("optical-body-s3"));
   _display.println(F("UI ready"));
   _display.display();
-  delay(600);
 
   Serial.println(F("[UI] DKARDU OLED + EC11 online"));
   return true;
@@ -69,6 +92,10 @@ void IRAM_ATTR DisplayUI::encIsr() {
 }
 
 void DisplayUI::tick(OpticalBody& body) {
+  // If begin() failed we still have a valid object, but no display.
+  // Guard the draw path.
+  static bool hasDisplay = true;   // set false on first failed draw if needed
+
   handleInput();
 
   // Debounce buttons ~40 ms
@@ -90,8 +117,8 @@ void DisplayUI::tick(OpticalBody& body) {
     lastEncSw   = e;
   }
 
-  // Redraw ~10 Hz
-  if (now - _lastDraw > 100) {
+  // Redraw ~10 Hz only if we successfully started the display
+  if (hasDisplay && (now - _lastDraw > 100)) {
     _lastDraw = now;
     draw(body);
   }
@@ -173,8 +200,6 @@ void DisplayUI::draw(OpticalBody& body) {
       _display.print(F("ID: "));
       _display.println(OPTICAL_BODY_NODE_ID);
       _display.print(F("Geom: "));
-      // body does not yet expose geometry_state publicly in a simple way;
-      // we show mode + streaming as proxy for Phase 0
       _display.println(_held ? F("HELD") : F("PASSIVE"));
       _display.print(F("Stream: "));
       _display.println(_streaming ? F("ON") : F("OFF"));
