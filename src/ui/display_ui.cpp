@@ -31,7 +31,6 @@ DisplayUI::DisplayUI()
 bool DisplayUI::begin() {
   _instance = this;
 
-  // Buttons / encoder first — these never block
   pinMode(UI_ENC_A_PIN, INPUT_PULLUP);
   pinMode(UI_ENC_B_PIN, INPUT_PULLUP);
   pinMode(UI_ENC_SW_PIN, INPUT_PULLUP);
@@ -39,19 +38,17 @@ bool DisplayUI::begin() {
   pinMode(UI_RETURN_PIN, INPUT_PULLUP);
 
   _lastEncA = digitalRead(UI_ENC_A_PIN);
+
+  // Interrupt on both edges of A for better EC11 compatibility
   attachInterrupt(digitalPinToInterrupt(UI_ENC_A_PIN), DisplayUI::encIsr, CHANGE);
 
   Serial.println(F("[UI] probing SH1106 OLED..."));
   Serial.flush();
 
-  // Give the I2C bus a moment after Wire.begin()
   delay(50);
 
-  // Adafruit begin() can hang if the device is missing or the bus is stuck.
-  // We attempt it, but if it fails we continue without a display.
   bool ok = false;
   {
-    // Simple presence check first
     Wire.beginTransmission(UI_OLED_ADDR);
     uint8_t err = Wire.endTransmission();
     if (err != 0) {
@@ -60,7 +57,6 @@ bool DisplayUI::begin() {
       Serial.println(F("[UI] continuing without display"));
       return false;
     }
-
     ok = _display.begin(UI_OLED_ADDR, true);
   }
 
@@ -78,23 +74,32 @@ bool DisplayUI::begin() {
   _display.display();
 
   Serial.println(F("[UI] DKARDU OLED + EC11 online"));
+  Serial.print(F("[UI] Encoder A=GPIO")); Serial.print(UI_ENC_A_PIN);
+  Serial.print(F(" B=GPIO")); Serial.println(UI_ENC_B_PIN);
   return true;
 }
 
 void IRAM_ATTR DisplayUI::encIsr() {
   if (!_instance) return;
-  bool a = digitalRead(UI_ENC_A_PIN);
-  if (!a && _instance->_lastEncA) {
-    // falling edge on A
-    _instance->_rotDelta += (digitalRead(UI_ENC_B_PIN) ? -1 : 1);
-  }
+
+  static uint8_t lastAB = 0;
+  uint8_t a = digitalRead(UI_ENC_A_PIN) ? 1 : 0;
+  uint8_t b = digitalRead(UI_ENC_B_PIN) ? 1 : 0;
+  uint8_t ab = (a << 1) | b;
+
+  // Simple full-step quadrature decode
+  // Transitions that indicate clockwise / counter-clockwise
+  if (lastAB == 0b00 && ab == 0b01) _instance->_rotDelta += 1;
+  if (lastAB == 0b00 && ab == 0b10) _instance->_rotDelta -= 1;
+  if (lastAB == 0b01 && ab == 0b11) _instance->_rotDelta += 1;
+  if (lastAB == 0b10 && ab == 0b11) _instance->_rotDelta -= 1;
+
+  lastAB = ab;
   _instance->_lastEncA = a;
 }
 
 void DisplayUI::tick(OpticalBody& body) {
-  // If begin() failed we still have a valid object, but no display.
-  // Guard the draw path.
-  static bool hasDisplay = true;   // set false on first failed draw if needed
+  static bool hasDisplay = true;
 
   handleInput();
 
@@ -110,14 +115,25 @@ void DisplayUI::tick(OpticalBody& body) {
 
     if (!c && lastConfirm) { _confirmPressed = true; onConfirm(); }
     if (!r && lastReturn)  { _returnPressed  = true; onReturn(); }
-    if (!e && lastEncSw)   { _confirmPressed = true; onConfirm(); } // encoder push = confirm
+    if (!e && lastEncSw)   { _confirmPressed = true; onConfirm(); }
 
     lastConfirm = c;
     lastReturn  = r;
     lastEncSw   = e;
   }
 
-  // Redraw ~10 Hz only if we successfully started the display
+  // Debug: print encoder pin state every 2 s so we can see if A/B move
+  static uint32_t lastDbg = 0;
+  if (now - lastDbg > 2000) {
+    lastDbg = now;
+    Serial.print(F("[ENC] A="));
+    Serial.print(digitalRead(UI_ENC_A_PIN));
+    Serial.print(F(" B="));
+    Serial.print(digitalRead(UI_ENC_B_PIN));
+    Serial.print(F(" SW="));
+    Serial.println(digitalRead(UI_ENC_SW_PIN));
+  }
+
   if (hasDisplay && (now - _lastDraw > 100)) {
     _lastDraw = now;
     draw(body);
@@ -132,12 +148,15 @@ void DisplayUI::handleInput() {
 
   if (d == 0) return;
 
+  // Normalize to ±1 per detent
+  if (d > 0) d = 1;
+  if (d < 0) d = -1;
+
   switch (_page) {
     case UiPage::Excite:
-      _exciteId = constrain(_exciteId + d, 0, 15);   // 16 possible lasers
+      _exciteId = constrain(_exciteId + d, 0, 15);
       break;
     default:
-      // navigate pages
       {
         int p = (int)_page + d;
         if (p < 0) p = (int)UiPage::COUNT - 1;
@@ -150,31 +169,17 @@ void DisplayUI::handleInput() {
 
 void DisplayUI::onConfirm() {
   switch (_page) {
-    case UiPage::Mode:
-      _held = !_held;
-      break;
-    case UiPage::Excite:
-      _doExcite = true;
-      break;
-    case UiPage::Stream:
-      _streaming = !_streaming;
-      break;
-    case UiPage::Dump:
-      _doDump = true;
-      break;
-    case UiPage::Calibrate:
-      _doMap = true;
-      break;
-    case UiPage::Identity:
-      _doVerify = true;
-      break;
-    default:
-      break;
+    case UiPage::Mode:      _held = !_held; break;
+    case UiPage::Excite:    _doExcite = true; break;
+    case UiPage::Stream:    _streaming = !_streaming; break;
+    case UiPage::Dump:      _doDump = true; break;
+    case UiPage::Calibrate: _doMap = true; break;
+    case UiPage::Identity:  _doVerify = true; break;
+    default: break;
   }
 }
 
 void DisplayUI::onReturn() {
-  // Always go back to Status
   _page = UiPage::Status;
 }
 
@@ -184,7 +189,6 @@ void DisplayUI::draw(OpticalBody& body) {
   _display.setTextColor(SH110X_WHITE);
   _display.setCursor(0, 0);
 
-  // Title bar
   const char* titles[] = {
     "STATUS", "IDENTITY", "MODE", "EXCITE",
     "STREAM", "DUMP", "CALIBRATE"
@@ -199,31 +203,27 @@ void DisplayUI::draw(OpticalBody& body) {
     case UiPage::Status:
       _display.print(F("ID: "));
       _display.println(OPTICAL_BODY_NODE_ID);
-      _display.print(F("Geom: "));
+      _display.print(F("Mode: "));
       _display.println(_held ? F("HELD") : F("PASSIVE"));
       _display.print(F("Stream: "));
       _display.println(_streaming ? F("ON") : F("OFF"));
-      _display.println(F("Enc+Conf to navigate"));
+      _display.println(F("Rotate=menu"));
       break;
 
     case UiPage::Identity:
       _display.println(F("Confirm = VERIFY"));
-      _display.println(F("FRAM identity probe"));
-      _display.println();
-      _display.println(F("Return = Status"));
+      _display.println(F("FRAM identity"));
       break;
 
     case UiPage::Mode:
       _display.print(F("Current: "));
       _display.println(_held ? F("HELD") : F("PASSIVE"));
-      _display.println();
       _display.println(F("Confirm = toggle"));
       break;
 
     case UiPage::Excite:
       _display.print(F("Laser ID: "));
       _display.println(_exciteId);
-      _display.println();
       _display.println(F("Rotate = change"));
       _display.println(F("Confirm = fire"));
       break;
@@ -231,21 +231,17 @@ void DisplayUI::draw(OpticalBody& body) {
     case UiPage::Stream:
       _display.print(F("Streaming: "));
       _display.println(_streaming ? F("ON") : F("OFF"));
-      _display.println();
       _display.println(F("Confirm = toggle"));
-      _display.println(F("(serial JSONL)"));
       break;
 
     case UiPage::Dump:
       _display.println(F("Confirm = DUMP"));
-      _display.println(F("raw ADC volts"));
-      _display.println(F("(first 8 ch)"));
+      _display.println(F("raw ADC"));
       break;
 
     case UiPage::Calibrate:
       _display.println(F("Confirm = MAP"));
-      _display.println(F("full clean cal"));
-      _display.println(F("(dark + one-hot)"));
+      _display.println(F("full calibration"));
       break;
 
     default:
@@ -255,4 +251,4 @@ void DisplayUI::draw(OpticalBody& body) {
   _display.display();
 }
 
-#endif // OPTICAL_UI
+#endif
