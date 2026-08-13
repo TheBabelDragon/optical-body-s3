@@ -2,9 +2,10 @@
  * optical-body-s3 / main.cpp
  *
  * Boot: Field Bus HELLO → identity verify → map if needed
- * Loop: passive OR host commands + Field Bus heartbeat / RX
+ * Loop: passive OR host commands + Field Bus heartbeat / RX + optional UI
  *
  * Pin map: see WIRING_PHASE0.md (dictated, not interactive)
+ * UI:    see HARDWARE_PINOUT.md (DKARDU section) when OPTICAL_UI=1
  */
 
 #include <Arduino.h>
@@ -12,6 +13,7 @@
 #include "optical_body/optical_body.h"
 #include "protocol/command_parser.h"
 #include "field_bus/field_bus_node.h"
+#include "ui/display_ui.h"
 
 #ifndef OPTICAL_BODY_NODE_ID
 #define OPTICAL_BODY_NODE_ID "optical_s3_001"
@@ -30,6 +32,7 @@
 
 OpticalBody  body(OPTICAL_BODY_NODE_ID);
 FieldBusNode bus(FB_NODE_OPTICAL);   // 0x02
+DisplayUI    ui;
 
 enum class RunMode : uint8_t { Passive, Held };
 static RunMode mode = RunMode::Passive;
@@ -43,6 +46,9 @@ void setup() {
   Serial.println(F("  optical-body-s3  —  MetaField body"));
   Serial.println(F("  cmds: EXCITE <id> | MAP | VERIFY | PASSIVE | DUMP"));
   Serial.println(F("  bus : Field Bus node 0x02 (Optical)"));
+#if defined(OPTICAL_UI) && OPTICAL_UI
+  Serial.println(F("  ui  : DKARDU OLED + EC11 enabled"));
+#endif
   Serial.println(F("========================================"));
   Serial.print(F("Node ID : "));
   Serial.println(OPTICAL_BODY_NODE_ID);
@@ -69,6 +75,11 @@ void setup() {
     }
   }
 
+  // Optional UI (shares I²C)
+  if (!ui.begin()) {
+    Serial.println(F("[UI] continuing without display"));
+  }
+
   bool need_map = true;
   if (body.hasStoredIdentity()) {
     bool unchanged = false;
@@ -93,6 +104,41 @@ void setup() {
 void loop() {
   bus.poll();
 
+  // --- UI actions (if present) ---
+  ui.tick(body);
+
+  if (ui.requestExcite()) {
+    int id = ui.exciteId();
+    if (id >= 0 && id < body.numLasers()) {
+      Serial.print(F("[UI] EXCITE "));
+      Serial.println(id);
+      body.exciteOnce((uint16_t)id);
+      mode = RunMode::Held;
+    }
+    ui.clearExcite();
+  }
+  if (ui.requestMap()) {
+    Serial.println(F("[UI] MAP"));
+    body.runSelfMap();
+    ui.clearMap();
+  }
+  if (ui.requestDump()) {
+    Serial.println(F("[UI] DUMP"));
+    body.dumpRaw(8);
+    ui.clearDump();
+  }
+  if (ui.requestVerify()) {
+    Serial.println(F("[UI] VERIFY"));
+    bool ok = false;
+    body.verifyIdentity(&ok, 0.08f);
+    ui.clearVerify();
+  }
+
+  // Sync mode from UI if it changed
+  if (ui.heldMode()) mode = RunMode::Held;
+  else if (mode == RunMode::Held && !ui.heldMode()) mode = RunMode::Passive;
+
+  // --- Serial host commands (still supported) ---
   ParsedCommand cmd;
   if (pollCommand(cmd)) {
     switch (cmd.type) {
