@@ -37,106 +37,145 @@ bool DisplayUI::begin() {
   pinMode(UI_CONFIRM_PIN, INPUT_PULLUP);
   pinMode(UI_RETURN_PIN, INPUT_PULLUP);
 
-  Serial.println(F("[UI] probing SH1106..."));
-  delay(50);
-
+  delay(30);
   Wire.beginTransmission(UI_OLED_ADDR);
   if (Wire.endTransmission() != 0) {
     Serial.println(F("[UI] OLED not found"));
     return false;
   }
   if (!_display.begin(UI_OLED_ADDR, true)) {
-    Serial.println(F("[UI] SH1106 begin failed"));
+    Serial.println(F("[UI] SH1106 failed"));
     return false;
   }
 
+  _page = UiPage::Status;
+  _held = false;
+  _streaming = true;
+  _exciteId = 0;
+
+  drawSplash();
+  Serial.println(F("[UI] menu ready"));
+  return true;
+}
+
+void DisplayUI::drawSplash() {
   _display.clearDisplay();
   _display.setTextSize(1);
   _display.setTextColor(SH110X_WHITE);
   _display.setCursor(0, 0);
   _display.println(F("optical-body-s3"));
-  _display.println(F("turn encoder"));
+  _display.println(F(""));
+  _display.println(F("Turn = move"));
+  _display.println(F("Click = select"));
+  _display.println(F("Back  = return"));
   _display.display();
-
-  Serial.print(F("[UI] A=GPIO")); Serial.print(UI_ENC_A_PIN);
-  Serial.print(F(" B=GPIO")); Serial.println(UI_ENC_B_PIN);
-  return true;
+  delay(900);
 }
 
 void IRAM_ATTR DisplayUI::encIsr() {}
 
 void DisplayUI::tick(OpticalBody& body) {
-  // ---- Simple: any change on A or B advances the menu ----
-  // This works even if only one encoder pin is connected.
+  uint32_t now = millis();
+
+  // ---------- Encoder (any edge, strong debounce) ----------
   static uint8_t prevA = 1, prevB = 1;
-  static uint32_t lastEdge = 0;
+  static uint32_t lastEnc = 0;
 
   uint8_t a = digitalRead(UI_ENC_A_PIN);
   uint8_t b = digitalRead(UI_ENC_B_PIN);
-  uint32_t now = millis();
 
-  bool edge = (a != prevA) || (b != prevB);
-  if (edge && (now - lastEdge) > 20) {   // 20 ms debounce — one step per detent
-    lastEdge = now;
-
-    // Direction: prefer B if it moved, else use A
-    if (b != prevB) {
-      _rotDelta += (b == 0) ? 1 : -1;
-    } else {
-      _rotDelta += (a == 0) ? 1 : -1;
-    }
+  if ((a != prevA || b != prevB) && (now - lastEnc) > 35) {
+    lastEnc = now;
+    // One step per detent-ish edge
+    int dir = 1;
+    if (b != prevB) dir = (b == 0) ? 1 : -1;
+    else            dir = (a == 0) ? 1 : -1;
+    _rotDelta += dir;
   }
   prevA = a;
   prevB = b;
 
-  handleInput();
+  if (_rotDelta != 0) {
+    int step = (_rotDelta > 0) ? 1 : -1;
+    _rotDelta = 0;
 
-  // ---- Buttons ----
-  if (now - _lastBtn > 40) {
-    _lastBtn = now;
-    static bool prevC = 1, prevR = 1, prevS = 1;
-    bool c = digitalRead(UI_CONFIRM_PIN);
-    bool r = digitalRead(UI_RETURN_PIN);
-    bool s = digitalRead(UI_ENC_SW_PIN);
-    if (!c && prevC) onConfirm();
-    if (!r && prevR) onReturn();
-    if (!s && prevS) onConfirm();
-    prevC = c; prevR = r; prevS = s;
+    if (_page == UiPage::Excite) {
+      _exciteId += step;
+      if (_exciteId < 0) _exciteId = 15;
+      if (_exciteId > 15) _exciteId = 0;
+    } else {
+      int p = (int)_page + step;
+      if (p < 0) p = (int)UiPage::COUNT - 1;
+      if (p >= (int)UiPage::COUNT) p = 0;
+      _page = (UiPage)p;
+    }
+    _lastDraw = 0;   // force redraw
   }
 
-  // ---- Draw ----
-  if (now - _lastDraw > 50) {
+  // ---------- Buttons (Confirm / Encoder SW / Return) ----------
+  if (now - _lastBtn > 45) {
+    _lastBtn = now;
+
+    static bool prevConfirm = 1, prevReturn = 1, prevSw = 1;
+    bool confirm = digitalRead(UI_CONFIRM_PIN);
+    bool ret     = digitalRead(UI_RETURN_PIN);
+    bool sw      = digitalRead(UI_ENC_SW_PIN);
+
+    // active LOW
+    if (confirm == 0 && prevConfirm == 1) {
+      onConfirm();
+      _lastDraw = 0;
+    }
+    if (sw == 0 && prevSw == 1) {
+      onConfirm();          // encoder push = select
+      _lastDraw = 0;
+    }
+    if (ret == 0 && prevReturn == 1) {
+      onReturn();
+      _lastDraw = 0;
+    }
+
+    prevConfirm = confirm;
+    prevReturn  = ret;
+    prevSw      = sw;
+  }
+
+  // ---------- Draw ----------
+  if (now - _lastDraw > 60) {
     _lastDraw = now;
     draw(body);
   }
 }
 
 void DisplayUI::handleInput() {
-  int8_t d = _rotDelta;
-  _rotDelta = 0;
-  if (d == 0) return;
-
-  d = (d > 0) ? 1 : -1;
-
-  if (_page == UiPage::Excite) {
-    _exciteId = constrain(_exciteId + d, 0, 15);
-  } else {
-    int p = (int)_page + d;
-    if (p < 0) p = (int)UiPage::COUNT - 1;
-    if (p >= (int)UiPage::COUNT) p = 0;
-    _page = (UiPage)p;
-  }
+  // kept for header compatibility; logic is inline in tick()
 }
 
 void DisplayUI::onConfirm() {
   switch (_page) {
-    case UiPage::Mode:      _held = !_held; break;
-    case UiPage::Excite:    _doExcite = true; break;
-    case UiPage::Stream:    _streaming = !_streaming; break;
-    case UiPage::Dump:      _doDump = true; break;
-    case UiPage::Calibrate: _doMap = true; break;
-    case UiPage::Identity:  _doVerify = true; break;
-    default: break;
+    case UiPage::Status:
+      // nothing — just stay
+      break;
+    case UiPage::Identity:
+      _doVerify = true;
+      break;
+    case UiPage::Mode:
+      _held = !_held;
+      break;
+    case UiPage::Excite:
+      _doExcite = true;
+      break;
+    case UiPage::Stream:
+      _streaming = !_streaming;
+      break;
+    case UiPage::Dump:
+      _doDump = true;
+      break;
+    case UiPage::Calibrate:
+      _doMap = true;
+      break;
+    default:
+      break;
   }
 }
 
@@ -148,49 +187,78 @@ void DisplayUI::draw(OpticalBody& body) {
   _display.clearDisplay();
   _display.setTextSize(1);
   _display.setTextColor(SH110X_WHITE);
-  _display.setCursor(0, 0);
 
+  // Title
   const char* titles[] = {
     "STATUS", "IDENTITY", "MODE", "EXCITE",
     "STREAM", "DUMP", "CALIBRATE"
   };
+  _display.setCursor(0, 0);
   _display.print("> ");
   _display.println(titles[(int)_page]);
   _display.drawFastHLine(0, 10, 128, SH110X_WHITE);
+
   _display.setCursor(0, 14);
 
   switch (_page) {
     case UiPage::Status:
       _display.println(OPTICAL_BODY_NODE_ID);
-      _display.print("Mode ");
+      _display.print("Mode: ");
       _display.println(_held ? "HELD" : "PASSIVE");
-      _display.println("Turn knob");
-      break;
-    case UiPage::Identity:
-      _display.println("Confirm=VERIFY");
-      break;
-    case UiPage::Mode:
-      _display.print("Now ");
-      _display.println(_held ? "HELD" : "PASSIVE");
-      _display.println("Confirm=toggle");
-      break;
-    case UiPage::Excite:
-      _display.print("Laser ");
-      _display.println(_exciteId);
-      _display.println("Confirm=fire");
-      break;
-    case UiPage::Stream:
-      _display.print("Stream ");
+      _display.print("Stream: ");
       _display.println(_streaming ? "ON" : "OFF");
+      _display.println("Turn=nav  Click=ok");
       break;
+
+    case UiPage::Identity:
+      _display.println("Check identity");
+      _display.println("");
+      _display.println("Click = VERIFY");
+      _display.println("Back  = Status");
+      break;
+
+    case UiPage::Mode:
+      _display.print("Current: ");
+      _display.println(_held ? "HELD" : "PASSIVE");
+      _display.println("");
+      _display.println("Click = toggle");
+      _display.println("Back  = Status");
+      break;
+
+    case UiPage::Excite:
+      _display.print("Laser: ");
+      _display.println(_exciteId);
+      _display.println("Turn = change");
+      _display.println("Click = FIRE");
+      _display.println("Back  = Status");
+      break;
+
+    case UiPage::Stream:
+      _display.print("Stream: ");
+      _display.println(_streaming ? "ON" : "OFF");
+      _display.println("");
+      _display.println("Click = toggle");
+      _display.println("Back  = Status");
+      break;
+
     case UiPage::Dump:
-      _display.println("Confirm=DUMP");
+      _display.println("Raw ADC dump");
+      _display.println("");
+      _display.println("Click = DUMP");
+      _display.println("Back  = Status");
       break;
+
     case UiPage::Calibrate:
-      _display.println("Confirm=MAP");
+      _display.println("Full self-map");
+      _display.println("");
+      _display.println("Click = MAP");
+      _display.println("Back  = Status");
       break;
-    default: break;
+
+    default:
+      break;
   }
+
   _display.display();
 }
 
