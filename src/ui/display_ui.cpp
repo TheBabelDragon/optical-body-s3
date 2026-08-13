@@ -4,7 +4,6 @@
 
 #include "optical_body/optical_body.h"
 
-// Default pins (change in platformio.ini if needed)
 #ifndef UI_ENC_A_PIN
 #define UI_ENC_A_PIN 1
 #endif
@@ -22,11 +21,6 @@
 #endif
 #ifndef UI_OLED_ADDR
 #define UI_OLED_ADDR 0x3C
-#endif
-
-// Set to 1 in platformio.ini to swap A/B interpretation
-#ifndef UI_ENC_SWAP_AB
-#define UI_ENC_SWAP_AB 0
 #endif
 
 DisplayUI* DisplayUI::_instance = nullptr;
@@ -64,7 +58,7 @@ bool DisplayUI::begin() {
   _display.println(F("turn encoder"));
   _display.display();
 
-  Serial.print(F("[UI] ENC A=GPIO")); Serial.print(UI_ENC_A_PIN);
+  Serial.print(F("[UI] A=GPIO")); Serial.print(UI_ENC_A_PIN);
   Serial.print(F(" B=GPIO")); Serial.println(UI_ENC_B_PIN);
   return true;
 }
@@ -72,36 +66,28 @@ bool DisplayUI::begin() {
 void IRAM_ATTR DisplayUI::encIsr() {}
 
 void DisplayUI::tick(OpticalBody& body) {
-  // ---- Classic 4-state EC11 decoder ----
-  // State is (lastAB << 2) | currentAB
-  // Table gives +1 / -1 / 0 for each transition
-  static const int8_t table[] = {
-    0, -1,  1,  0,
-    1,  0,  0, -1,
-   -1,  0,  0,  1,
-    0,  1, -1,  0
-  };
-  static uint8_t lastAB = 0;
-  static uint32_t lastMove = 0;
+  // ---- Simple: any change on A or B advances the menu ----
+  // This works even if only one encoder pin is connected.
+  static uint8_t prevA = 1, prevB = 1;
+  static uint32_t lastEdge = 0;
 
-  uint8_t a = digitalRead(UI_ENC_A_PIN) ? 1 : 0;
-  uint8_t b = digitalRead(UI_ENC_B_PIN) ? 1 : 0;
-
-#if UI_ENC_SWAP_AB
-  uint8_t ab = (b << 1) | a;   // swapped
-#else
-  uint8_t ab = (a << 1) | b;   // normal
-#endif
-
-  uint8_t idx = (lastAB << 2) | ab;
-  int8_t step = table[idx & 0x0F];
-  lastAB = ab;
-
+  uint8_t a = digitalRead(UI_ENC_A_PIN);
+  uint8_t b = digitalRead(UI_ENC_B_PIN);
   uint32_t now = millis();
-  if (step != 0 && (now - lastMove) > 5) {
-    lastMove = now;
-    _rotDelta += step;
+
+  bool edge = (a != prevA) || (b != prevB);
+  if (edge && (now - lastEdge) > 20) {   // 20 ms debounce — one step per detent
+    lastEdge = now;
+
+    // Direction: prefer B if it moved, else use A
+    if (b != prevB) {
+      _rotDelta += (b == 0) ? 1 : -1;
+    } else {
+      _rotDelta += (a == 0) ? 1 : -1;
+    }
   }
+  prevA = a;
+  prevB = b;
 
   handleInput();
 
@@ -116,14 +102,6 @@ void DisplayUI::tick(OpticalBody& body) {
     if (!r && prevR) onReturn();
     if (!s && prevS) onConfirm();
     prevC = c; prevR = r; prevS = s;
-  }
-
-  // ---- Debug (only when something changes) ----
-  static int8_t lastPrintedDelta = 0;
-  if (_rotDelta != 0 && _rotDelta != lastPrintedDelta) {
-    Serial.print(F("ENC step="));
-    Serial.println(_rotDelta);
-    lastPrintedDelta = _rotDelta;
   }
 
   // ---- Draw ----
