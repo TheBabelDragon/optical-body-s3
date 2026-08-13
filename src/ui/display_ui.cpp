@@ -23,44 +23,45 @@
 #define UI_OLED_ADDR 0x3C
 #endif
 
-/*
- * Rotary encoder (EC11) — standard quadrature decoding
- *
- * Pins A and B form a 2-bit gray code. Valid transitions:
- *
- *   CW:  00 → 01 → 11 → 10 → 00
- *   CCW: 00 → 10 → 11 → 01 → 00
- *
- * Lookup: index = (old_state << 2) | new_state
- * Value:  +1 = CW, -1 = CCW, 0 = invalid/no move
- *
- * A typical 20-detent EC11 produces 4 gray transitions per mechanical click.
- * We sum those and emit one menu step when |sum| reaches 4.
- */
-
 #ifndef UI_ENC_DETENT
 #define UI_ENC_DETENT 4
 #endif
 
+/*
+ * Quadrature (gray code) on A/B:
+ *
+ *   State = (A << 1) | B
+ *
+ *   CW:  00 → 01 → 11 → 10 → 00   → each step +1, 4 steps = 1 detent
+ *   CCW: 00 → 10 → 11 → 01 → 00   → each step -1
+ *
+ * Table index = (old << 2) | new
+ */
+static const int8_t QUAD[16] = {
+  // new:     00  01  10  11
+  /* old 00 */ 0, +1, -1,  0,
+  /* old 01 */-1,  0,  0, +1,
+  /* old 10 */+1,  0,  0, -1,
+  /* old 11 */ 0, -1, +1,  0
+};
+
 DisplayUI* DisplayUI::_instance = nullptr;
 static bool s_editing = false;
 
-// Gray-code transition table (same one used in nearly every EC11 example)
-static const int8_t QUAD[16] = {
-  // new: 00  01  10  11     <- old in high bits
-  /*00*/   0, -1, +1,  0,
-  /*01*/  +1,  0,  0, -1,
-  /*10*/  -1,  0,  0, +1,
-  /*11*/   0, +1, -1,  0
-};
-
 static int8_t quadratureStep() {
   static uint8_t prev = 0;
-  static int16_t acc  = 0;
+  static int16_t acc = 0;
+  static bool seeded = false;
 
   uint8_t a = digitalRead(UI_ENC_A_PIN) ? 1 : 0;
   uint8_t b = digitalRead(UI_ENC_B_PIN) ? 1 : 0;
-  uint8_t cur = (a << 1) | b;   // bit1=A, bit0=B
+  uint8_t cur = (uint8_t)((a << 1) | b);
+
+  if (!seeded) {
+    prev = cur;
+    seeded = true;
+    return 0;
+  }
 
   if (cur == prev) return 0;
 
@@ -68,15 +69,15 @@ static int8_t quadratureStep() {
   prev = cur;
   if (d == 0) return 0;
 
-  acc += d;
+  acc = (int16_t)(acc + d);
 
   if (acc >= UI_ENC_DETENT) {
     acc = 0;
-    return +1;   // one full CW click
+    return +1;
   }
   if (acc <= -UI_ENC_DETENT) {
     acc = 0;
-    return -1;   // one full CCW click
+    return -1;
   }
   return 0;
 }
@@ -92,11 +93,6 @@ bool DisplayUI::begin() {
   pinMode(UI_ENC_SW_PIN, INPUT_PULLUP);
   pinMode(UI_CONFIRM_PIN, INPUT_PULLUP);
   pinMode(UI_RETURN_PIN, INPUT_PULLUP);
-
-  // Seed previous state so first edges are valid
-  uint8_t a = digitalRead(UI_ENC_A_PIN) ? 1 : 0;
-  uint8_t b = digitalRead(UI_ENC_B_PIN) ? 1 : 0;
-  (void)a; (void)b;
 
   delay(20);
   Wire.beginTransmission(UI_OLED_ADDR);
@@ -116,7 +112,7 @@ bool DisplayUI::begin() {
   _display.setTextColor(SH110X_WHITE);
   _display.setCursor(0, 0);
   _display.println(F("optical-body-s3"));
-  _display.println(F("CW/CCW from A/B"));
+  _display.println(F("quad A/B ready"));
   _display.display();
   delay(250);
   return true;
@@ -130,7 +126,6 @@ void DisplayUI::tick(OpticalBody& body) {
   uint32_t now = millis();
   static uint32_t lastTurnAt = 0;
 
-  // Direction comes only from A/B transition order
   int8_t step = quadratureStep();
   if (step != 0) {
     lastTurnAt = now;
@@ -149,7 +144,6 @@ void DisplayUI::tick(OpticalBody& body) {
     _lastDraw = 0;
   }
 
-  // Push = select. Ignore SW bounce for 200 ms after a turn.
   if (now - _lastBtn > 30) {
     _lastBtn = now;
     static bool pc = 1, pr = 1, ps = 1;
@@ -178,31 +172,16 @@ void DisplayUI::tick(OpticalBody& body) {
 
 void DisplayUI::onConfirm() {
   switch (_page) {
-    case UiPage::Identity:
-      _doVerify = true;
-      break;
-    case UiPage::Mode:
-      _held = !_held;
-      break;
+    case UiPage::Identity:  _doVerify = true; break;
+    case UiPage::Mode:      _held = !_held; break;
     case UiPage::Excite:
-      if (!s_editing) {
-        s_editing = true;          // push 1: edit laser id
-      } else {
-        s_editing = false;
-        _doExcite = true;          // push 2: fire
-      }
+      if (!s_editing) s_editing = true;
+      else { s_editing = false; _doExcite = true; }
       break;
-    case UiPage::Stream:
-      _streaming = !_streaming;
-      break;
-    case UiPage::Dump:
-      _doDump = true;
-      break;
-    case UiPage::Calibrate:
-      _doMap = true;
-      break;
-    default:
-      break;
+    case UiPage::Stream:    _streaming = !_streaming; break;
+    case UiPage::Dump:      _doDump = true; break;
+    case UiPage::Calibrate: _doMap = true; break;
+    default: break;
   }
 }
 
