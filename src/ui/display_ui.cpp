@@ -27,16 +27,15 @@
 #define UI_ENC_DETENT 4
 #endif
 
-/*
- * Quadrature (gray code) on A/B:
- *
- *   State = (A << 1) | B
- *
- *   CW:  00 → 01 → 11 → 10 → 00   → each step +1, 4 steps = 1 detent
- *   CCW: 00 → 10 → 11 → 01 → 00   → each step -1
- *
- * Table index = (old << 2) | new
- */
+DisplayUI* DisplayUI::_instance = nullptr;
+static bool s_editing = false;
+
+// Shared with ISR — one completed detent step (±1), consumed in tick()
+static volatile int8_t s_step = 0;
+static volatile uint8_t s_prev = 0;
+static volatile int16_t s_acc = 0;
+
+// CW: 00→01→11→10→00 = +1 each; CCW opposite
 static const int8_t QUAD[16] = {
   // new:     00  01  10  11
   /* old 00 */ 0, +1, -1,  0,
@@ -45,41 +44,26 @@ static const int8_t QUAD[16] = {
   /* old 11 */ 0, -1, +1,  0
 };
 
-DisplayUI* DisplayUI::_instance = nullptr;
-static bool s_editing = false;
-
-static int8_t quadratureStep() {
-  static uint8_t prev = 0;
-  static int16_t acc = 0;
-  static bool seeded = false;
-
+void IRAM_ATTR DisplayUI::encIsr() {
   uint8_t a = digitalRead(UI_ENC_A_PIN) ? 1 : 0;
   uint8_t b = digitalRead(UI_ENC_B_PIN) ? 1 : 0;
   uint8_t cur = (uint8_t)((a << 1) | b);
 
-  if (!seeded) {
-    prev = cur;
-    seeded = true;
-    return 0;
+  if (cur == s_prev) return;
+
+  int8_t d = QUAD[(s_prev << 2) | cur];
+  s_prev = cur;
+  if (d == 0) return;
+
+  s_acc = (int16_t)(s_acc + d);
+
+  if (s_acc >= UI_ENC_DETENT) {
+    s_acc = 0;
+    s_step = (int8_t)(s_step + 1);
+  } else if (s_acc <= -UI_ENC_DETENT) {
+    s_acc = 0;
+    s_step = (int8_t)(s_step - 1);
   }
-
-  if (cur == prev) return 0;
-
-  int8_t d = QUAD[(prev << 2) | cur];
-  prev = cur;
-  if (d == 0) return 0;
-
-  acc = (int16_t)(acc + d);
-
-  if (acc >= UI_ENC_DETENT) {
-    acc = 0;
-    return +1;
-  }
-  if (acc <= -UI_ENC_DETENT) {
-    acc = 0;
-    return -1;
-  }
-  return 0;
 }
 
 DisplayUI::DisplayUI()
@@ -93,6 +77,16 @@ bool DisplayUI::begin() {
   pinMode(UI_ENC_SW_PIN, INPUT_PULLUP);
   pinMode(UI_CONFIRM_PIN, INPUT_PULLUP);
   pinMode(UI_RETURN_PIN, INPUT_PULLUP);
+
+  // Seed state before enabling interrupts
+  uint8_t a = digitalRead(UI_ENC_A_PIN) ? 1 : 0;
+  uint8_t b = digitalRead(UI_ENC_B_PIN) ? 1 : 0;
+  s_prev = (uint8_t)((a << 1) | b);
+  s_acc = 0;
+  s_step = 0;
+
+  attachInterrupt(digitalPinToInterrupt(UI_ENC_A_PIN), DisplayUI::encIsr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(UI_ENC_B_PIN), DisplayUI::encIsr, CHANGE);
 
   delay(20);
   Wire.beginTransmission(UI_OLED_ADDR);
@@ -112,21 +106,29 @@ bool DisplayUI::begin() {
   _display.setTextColor(SH110X_WHITE);
   _display.setCursor(0, 0);
   _display.println(F("optical-body-s3"));
-  _display.println(F("quad A/B ready"));
+  _display.println(F("encoder IRQ"));
   _display.display();
-  delay(250);
+  delay(200);
   return true;
 }
 
 void DisplayUI::drawSplash() {}
-void IRAM_ATTR DisplayUI::encIsr() {}
 void DisplayUI::handleInput() {}
 
 void DisplayUI::tick(OpticalBody& body) {
   uint32_t now = millis();
   static uint32_t lastTurnAt = 0;
 
-  int8_t step = quadratureStep();
+  // Take completed detent steps from ISR
+  noInterrupts();
+  int8_t step = s_step;
+  s_step = 0;
+  interrupts();
+
+  // Clamp to one menu move per tick so a burst cannot skip the whole menu
+  if (step > 1) step = 1;
+  if (step < -1) step = -1;
+
   if (step != 0) {
     lastTurnAt = now;
 
@@ -150,7 +152,7 @@ void DisplayUI::tick(OpticalBody& body) {
     bool c = digitalRead(UI_CONFIRM_PIN);
     bool r = digitalRead(UI_RETURN_PIN);
     bool s = digitalRead(UI_ENC_SW_PIN);
-    bool quiet = (now - lastTurnAt) > 200;
+    bool quiet = (now - lastTurnAt) > 180;
 
     if ((!c && pc && quiet) || (!s && ps && quiet)) {
       onConfirm();
