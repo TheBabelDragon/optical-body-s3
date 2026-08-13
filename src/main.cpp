@@ -1,55 +1,54 @@
 /**
  * optical-body-s3 / main.cpp
  *
- * When SAFE_BOOT=1 is defined, this becomes a minimal diagnostic
- * firmware that only prints to Serial and never touches heavy
- * peripherals. Use it to prove the flash + USB path works.
- *
- * Set SAFE_BOOT=0 (or remove the flag) to restore full functionality.
+ * SAFE_BOOT=1 → minimal diagnostic that forces Serial output
+ * as early and as hard as possible on ESP32-S3 USB-CDC.
  */
 
 #include <Arduino.h>
 
 #if defined(SAFE_BOOT) && SAFE_BOOT
 
-// ------------------------------------------------------------------
-// MINIMAL SAFE BOOT — no OpticalBody, no FieldBus, no UI, no I2C
-// ------------------------------------------------------------------
-
 void setup() {
+  // Force USB CDC Serial on ESP32-S3
   Serial.begin(115200);
-  delay(1500);   // extra time for USB-CDC on ESP32-S3
 
-  for (int i = 0; i < 5; i++) {
+  // Long settle time — some S3 boards need this
+  delay(3000);
+
+  // Spam the serial port so something appears even if
+  // the first few packets are lost during enumeration
+  for (int i = 0; i < 20; i++) {
     Serial.println();
+    Serial.println(F("==== SAFE BOOT ALIVE ===="));
+    Serial.print(F("count = "));
+    Serial.println(i);
+    Serial.flush();
+    delay(200);
   }
 
   Serial.println(F("========================================"));
   Serial.println(F("  optical-body-s3  —  SAFE BOOT"));
-  Serial.println(F("  Minimal diagnostic mode"));
+  Serial.println(F("  If you see this, USB + flash work."));
   Serial.println(F("========================================"));
-  Serial.println(F("If you can see this, flash + USB work."));
-  Serial.println(F("Remove -D SAFE_BOOT=1 to restore full firmware."));
   Serial.flush();
 }
 
 void loop() {
   static uint32_t last = 0;
-  if (millis() - last > 2000) {
-    last = millis();
-    Serial.print(F("[SAFE] heartbeat  ms="));
-    Serial.println(millis());
+  uint32_t now = millis();
+  if (now - last >= 1000) {
+    last = now;
+    Serial.print(F("[SAFE] alive  ms="));
+    Serial.println(now);
     Serial.flush();
   }
-  delay(10);
+  delay(5);
 }
 
 #else
 
-// ------------------------------------------------------------------
-// FULL FIRMWARE
-// ------------------------------------------------------------------
-
+// Full firmware path (unchanged from previous version)
 #include <Wire.h>
 #include "optical_body/optical_body.h"
 #include "protocol/command_parser.h"
@@ -59,11 +58,9 @@ void loop() {
 #ifndef OPTICAL_BODY_NODE_ID
 #define OPTICAL_BODY_NODE_ID "optical_s3_001"
 #endif
-
 #ifndef FB_FIRMWARE_VER
 #define FB_FIRMWARE_VER 1
 #endif
-
 #ifndef WIRE_SDA_PIN
 #define WIRE_SDA_PIN 8
 #endif
@@ -115,10 +112,7 @@ void setup() {
   if (!body.begin()) {
     Serial.println(F("[FATAL] OpticalBody::begin() failed"));
     bus.setState(FB_STATE_ERROR);
-    while (true) {
-      bus.poll();
-      delay(1000);
-    }
+    while (true) { bus.poll(); delay(1000); }
   }
 
   Serial.println(F("[Boot] UI begin..."));
@@ -156,25 +150,20 @@ void loop() {
   if (ui.requestExcite()) {
     int id = ui.exciteId();
     if (id >= 0 && id < body.numLasers()) {
-      Serial.print(F("[UI] EXCITE "));
-      Serial.println(id);
       body.exciteOnce((uint16_t)id);
       mode = RunMode::Held;
     }
     ui.clearExcite();
   }
   if (ui.requestMap()) {
-    Serial.println(F("[UI] MAP"));
     body.runSelfMap();
     ui.clearMap();
   }
   if (ui.requestDump()) {
-    Serial.println(F("[UI] DUMP"));
     body.dumpRaw(8);
     ui.clearDump();
   }
   if (ui.requestVerify()) {
-    Serial.println(F("[UI] VERIFY"));
     bool ok = false;
     body.verifyIdentity(&ok, 0.08f);
     ui.clearVerify();
@@ -192,22 +181,15 @@ void loop() {
           mode = RunMode::Held;
         }
         break;
-      case BodyCommand::Map:
-        body.runSelfMap();
-        break;
+      case BodyCommand::Map:     body.runSelfMap(); break;
       case BodyCommand::Verify: {
         bool ok = false;
         body.verifyIdentity(&ok, 0.08f);
         break;
       }
-      case BodyCommand::Passive:
-        mode = RunMode::Passive;
-        break;
-      case BodyCommand::Dump:
-        body.dumpRaw(8);
-        break;
-      default:
-        break;
+      case BodyCommand::Passive: mode = RunMode::Passive; break;
+      case BodyCommand::Dump:    body.dumpRaw(8); break;
+      default: break;
     }
   }
 
@@ -219,4 +201,4 @@ void loop() {
   }
 }
 
-#endif // SAFE_BOOT
+#endif
