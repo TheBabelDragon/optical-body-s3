@@ -75,9 +75,7 @@ Expected boot story:
 ```
 optical-body-s3  —  MetaField body
 cmds: EXCITE <id> | MAP | VERIFY | PASSIVE | DUMP
-[Laser] pin map (dictated at compile time):
-  laser 00 → not wired
-  …
+ui  : DKARDU OLED + EC11 enabled
 … identity verify or first clean calibration …
 passive loop
 ```
@@ -138,6 +136,41 @@ Any laser left at the default (`-1`) is treated as “not wired” and only logg
 
 ---
 
+## Local UI — DKARDU EC11 + 1.3″ SH1106 OLED
+
+The firmware now supports the integrated **DKARDU** (or equivalent Estardyn-style) module:
+
+- 1.3″ SH1106 OLED (I²C, address 0x3C)
+- EC11 rotary encoder with push switch
+- Confirm + Return buttons
+
+**Default wiring** (see `HARDWARE_PINOUT.md` for full table):
+
+| Signal          | GPIO |
+|-----------------|------|
+| OLED SDA / SCL  | 8 / 9 (shared I²C) |
+| Encoder A / B   | 1 / 2 |
+| Encoder SW      | 3 |
+| Confirm         | 16 |
+| Return          | 17 |
+| VCC             | 3.3 V |
+
+Enabled by default via `-D OPTICAL_UI=1`. Comment that flag out to build a pure headless node.
+
+**Menu pages**
+
+- **Status** — node ID, mode, streaming state
+- **Identity** — trigger FRAM verify
+- **Mode** — toggle Passive ↔ Held
+- **Excite** — rotate to choose laser ID, Confirm to fire
+- **Stream** — toggle continuous serial FieldObservation emission
+- **Dump** — raw ADC snapshot
+- **Calibrate** — full clean self-map
+
+Rotate encoder to navigate / change values. Confirm (or encoder push) acts. Return always goes back to Status.
+
+---
+
 ## Dual detector streams
 
 ```
@@ -159,6 +192,8 @@ VERIFY        identity probe vs FRAM
 PASSIVE       resume cyclic scan
 DUMP          print raw ADC volts (bring-up diagnostic)
 ```
+
+(The same actions are also available from the OLED menu.)
 
 ---
 
