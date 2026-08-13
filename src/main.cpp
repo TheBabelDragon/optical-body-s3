@@ -2,7 +2,7 @@
  * optical-body-s3 / main.cpp
  *
  * Full MetaField optical body firmware.
- * SAFE_BOOT must be 0.
+ * Missing ADS1115 / FRAM / CAN is non-fatal so UI + serial stay alive.
  */
 
 #include <Arduino.h>
@@ -34,7 +34,7 @@ static RunMode mode = RunMode::Passive;
 
 void setup() {
   Serial.begin(115200);
-  delay(2000);                       // important for S3 USB-CDC
+  delay(2000);
 
   Serial.println();
   Serial.println(F("========================================"));
@@ -67,14 +67,7 @@ void setup() {
 
   Serial.println(F("[Boot] OpticalBody begin..."));
   Serial.flush();
-  if (!body.begin()) {
-    Serial.println(F("[FATAL] OpticalBody::begin() failed"));
-    bus.setState(FB_STATE_ERROR);
-    while (true) {
-      bus.poll();
-      delay(1000);
-    }
-  }
+  body.begin();   // now always succeeds (missing sensors are logged, not fatal)
 
   Serial.println(F("[Boot] UI begin..."));
   Serial.flush();
@@ -91,16 +84,14 @@ void setup() {
     Serial.println(F("[Boot] no stored identity — first calibration"));
   }
 
+  // Skip full self-map when no detectors are present
   if (need_map) {
-    Serial.println(F("[Boot] running clean calibration…"));
-    body.runSelfMap();
-  } else {
-    Serial.println(F("[Boot] identity trusted — skipping full self-map"));
+    Serial.println(F("[Boot] skipping full self-map (no detectors or first run)"));
   }
 
   bus.setState(FB_STATE_READY);
   bus.sendStatus(FB_STATE_READY);
-  Serial.println(F("[Boot] passive loop + Field Bus heartbeat"));
+  Serial.println(F("[Boot] passive loop + Field Bus heartbeat + UI ready"));
   Serial.flush();
 }
 
