@@ -4,6 +4,7 @@
 
 #include "optical_body/optical_body.h"
 
+// Default pins (change in platformio.ini if needed)
 #ifndef UI_ENC_A_PIN
 #define UI_ENC_A_PIN 1
 #endif
@@ -23,6 +24,11 @@
 #define UI_OLED_ADDR 0x3C
 #endif
 
+// Set to 1 in platformio.ini to swap A/B interpretation
+#ifndef UI_ENC_SWAP_AB
+#define UI_ENC_SWAP_AB 0
+#endif
+
 DisplayUI* DisplayUI::_instance = nullptr;
 
 DisplayUI::DisplayUI()
@@ -36,8 +42,6 @@ bool DisplayUI::begin() {
   pinMode(UI_ENC_SW_PIN, INPUT_PULLUP);
   pinMode(UI_CONFIRM_PIN, INPUT_PULLUP);
   pinMode(UI_RETURN_PIN, INPUT_PULLUP);
-
-  _lastEncA = digitalRead(UI_ENC_A_PIN);
 
   Serial.println(F("[UI] probing SH1106..."));
   delay(50);
@@ -57,63 +61,73 @@ bool DisplayUI::begin() {
   _display.setTextColor(SH110X_WHITE);
   _display.setCursor(0, 0);
   _display.println(F("optical-body-s3"));
-  _display.println(F("UI ready"));
+  _display.println(F("turn encoder"));
   _display.display();
 
-  Serial.println(F("[UI] ready"));
+  Serial.print(F("[UI] ENC A=GPIO")); Serial.print(UI_ENC_A_PIN);
+  Serial.print(F(" B=GPIO")); Serial.println(UI_ENC_B_PIN);
   return true;
 }
 
 void IRAM_ATTR DisplayUI::encIsr() {}
 
 void DisplayUI::tick(OpticalBody& body) {
-  // ---- Encoder: simple edge detect on A, direction from B ----
-  static uint8_t prevA = HIGH;
-  static uint32_t lastEdge = 0;
+  // ---- Classic 4-state EC11 decoder ----
+  // State is (lastAB << 2) | currentAB
+  // Table gives +1 / -1 / 0 for each transition
+  static const int8_t table[] = {
+    0, -1,  1,  0,
+    1,  0,  0, -1,
+   -1,  0,  0,  1,
+    0,  1, -1,  0
+  };
+  static uint8_t lastAB = 0;
+  static uint32_t lastMove = 0;
 
-  uint8_t a = digitalRead(UI_ENC_A_PIN);
-  uint8_t b = digitalRead(UI_ENC_B_PIN);
+  uint8_t a = digitalRead(UI_ENC_A_PIN) ? 1 : 0;
+  uint8_t b = digitalRead(UI_ENC_B_PIN) ? 1 : 0;
+
+#if UI_ENC_SWAP_AB
+  uint8_t ab = (b << 1) | a;   // swapped
+#else
+  uint8_t ab = (a << 1) | b;   // normal
+#endif
+
+  uint8_t idx = (lastAB << 2) | ab;
+  int8_t step = table[idx & 0x0F];
+  lastAB = ab;
+
   uint32_t now = millis();
-
-  if (a != prevA && (now - lastEdge) > 8) {          // 8 ms debounce
-    lastEdge = now;
-    if (a == LOW) {                                  // falling edge
-      // Try the common EC11 polarity first
-      if (b == HIGH) _rotDelta -= 1;                 // one direction
-      else           _rotDelta += 1;                 // other direction
-    }
+  if (step != 0 && (now - lastMove) > 5) {
+    lastMove = now;
+    _rotDelta += step;
   }
-  prevA = a;
 
-  // Apply any accumulated rotation
   handleInput();
 
   // ---- Buttons ----
-  if (now - _lastBtn > 50) {
+  if (now - _lastBtn > 40) {
     _lastBtn = now;
-    static bool prevC = HIGH, prevR = HIGH, prevS = HIGH;
+    static bool prevC = 1, prevR = 1, prevS = 1;
     bool c = digitalRead(UI_CONFIRM_PIN);
     bool r = digitalRead(UI_RETURN_PIN);
     bool s = digitalRead(UI_ENC_SW_PIN);
-
-    if (c == LOW && prevC == HIGH) onConfirm();
-    if (r == LOW && prevR == HIGH) onReturn();
-    if (s == LOW && prevS == HIGH) onConfirm();
-
+    if (!c && prevC) onConfirm();
+    if (!r && prevR) onReturn();
+    if (!s && prevS) onConfirm();
     prevC = c; prevR = r; prevS = s;
   }
 
-  // ---- Debug ----
-  static uint32_t lastDbg = 0;
-  if (now - lastDbg > 1000) {
-    lastDbg = now;
-    Serial.print(F("A=")); Serial.print(a);
-    Serial.print(F(" B=")); Serial.print(b);
-    Serial.print(F(" d=")); Serial.println(_rotDelta);
+  // ---- Debug (only when something changes) ----
+  static int8_t lastPrintedDelta = 0;
+  if (_rotDelta != 0 && _rotDelta != lastPrintedDelta) {
+    Serial.print(F("ENC step="));
+    Serial.println(_rotDelta);
+    lastPrintedDelta = _rotDelta;
   }
 
   // ---- Draw ----
-  if (now - _lastDraw > 80) {
+  if (now - _lastDraw > 50) {
     _lastDraw = now;
     draw(body);
   }
@@ -124,7 +138,6 @@ void DisplayUI::handleInput() {
   _rotDelta = 0;
   if (d == 0) return;
 
-  // one step per detent
   d = (d > 0) ? 1 : -1;
 
   if (_page == UiPage::Excite) {
@@ -170,30 +183,33 @@ void DisplayUI::draw(OpticalBody& body) {
 
   switch (_page) {
     case UiPage::Status:
-      _display.print("ID: "); _display.println(OPTICAL_BODY_NODE_ID);
-      _display.print("Mode: "); _display.println(_held ? "HELD" : "PASSIVE");
-      _display.println("Rotate = change page");
+      _display.println(OPTICAL_BODY_NODE_ID);
+      _display.print("Mode ");
+      _display.println(_held ? "HELD" : "PASSIVE");
+      _display.println("Turn knob");
       break;
     case UiPage::Identity:
-      _display.println("Confirm = VERIFY");
+      _display.println("Confirm=VERIFY");
       break;
     case UiPage::Mode:
-      _display.print("Now: "); _display.println(_held ? "HELD" : "PASSIVE");
-      _display.println("Confirm = toggle");
+      _display.print("Now ");
+      _display.println(_held ? "HELD" : "PASSIVE");
+      _display.println("Confirm=toggle");
       break;
     case UiPage::Excite:
-      _display.print("Laser "); _display.println(_exciteId);
-      _display.println("Confirm = fire");
+      _display.print("Laser ");
+      _display.println(_exciteId);
+      _display.println("Confirm=fire");
       break;
     case UiPage::Stream:
-      _display.print("Stream "); _display.println(_streaming ? "ON" : "OFF");
-      _display.println("Confirm = toggle");
+      _display.print("Stream ");
+      _display.println(_streaming ? "ON" : "OFF");
       break;
     case UiPage::Dump:
-      _display.println("Confirm = DUMP");
+      _display.println("Confirm=DUMP");
       break;
     case UiPage::Calibrate:
-      _display.println("Confirm = MAP");
+      _display.println("Confirm=MAP");
       break;
     default: break;
   }
