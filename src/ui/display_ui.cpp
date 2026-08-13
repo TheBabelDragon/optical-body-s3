@@ -23,6 +23,12 @@
 #define UI_OLED_ADDR 0x3C
 #endif
 
+// EC11 typically produces 4 quadrature transitions per detent.
+// We accumulate those and only emit ±1 when a full click is done.
+#ifndef UI_ENC_DETENT_STEPS
+#define UI_ENC_DETENT_STEPS 4
+#endif
+
 DisplayUI* DisplayUI::_instance = nullptr;
 
 DisplayUI::DisplayUI()
@@ -54,7 +60,7 @@ bool DisplayUI::begin() {
   _exciteId = 0;
 
   drawSplash();
-  Serial.println(F("[UI] menu ready"));
+  Serial.println(F("[UI] menu ready (per-click)"));
   return true;
 }
 
@@ -64,12 +70,12 @@ void DisplayUI::drawSplash() {
   _display.setTextColor(SH110X_WHITE);
   _display.setCursor(0, 0);
   _display.println(F("optical-body-s3"));
-  _display.println(F(""));
-  _display.println(F("Turn = move"));
-  _display.println(F("Click = select"));
-  _display.println(F("Back  = return"));
+  _display.println();
+  _display.println(F("Click turn = move"));
+  _display.println(F("Push     = select"));
+  _display.println(F("Back     = return"));
   _display.display();
-  delay(900);
+  delay(800);
 }
 
 void IRAM_ATTR DisplayUI::encIsr() {}
@@ -77,31 +83,49 @@ void IRAM_ATTR DisplayUI::encIsr() {}
 void DisplayUI::tick(OpticalBody& body) {
   uint32_t now = millis();
 
-  // ---------- Encoder (any edge, strong debounce) ----------
-  static uint8_t prevA = 1, prevB = 1;
-  static uint32_t lastEnc = 0;
+  // ---- Full quadrature state machine, count per detent ----
+  // Gray code table: index = (oldAB << 2) | newAB
+  static const int8_t table[16] = {
+     0, -1,  1,  0,
+     1,  0,  0, -1,
+    -1,  0,  0,  1,
+     0,  1, -1,  0
+  };
 
-  uint8_t a = digitalRead(UI_ENC_A_PIN);
-  uint8_t b = digitalRead(UI_ENC_B_PIN);
+  static uint8_t lastAB = 0;
+  static int8_t  accum  = 0;   // accumulates fractional steps
 
-  if ((a != prevA || b != prevB) && (now - lastEnc) > 35) {
-    lastEnc = now;
-    // One step per detent-ish edge
-    int dir = 1;
-    if (b != prevB) dir = (b == 0) ? 1 : -1;
-    else            dir = (a == 0) ? 1 : -1;
-    _rotDelta += dir;
+  uint8_t a = digitalRead(UI_ENC_A_PIN) ? 1 : 0;
+  uint8_t b = digitalRead(UI_ENC_B_PIN) ? 1 : 0;
+  uint8_t ab = (a << 1) | b;
+
+  if (ab != lastAB) {
+    uint8_t idx = (lastAB << 2) | ab;
+    int8_t t = table[idx & 0x0F];
+    lastAB = ab;
+
+    if (t != 0) {
+      accum += t;
+
+      // One full mechanical click completed?
+      if (accum >= UI_ENC_DETENT_STEPS) {
+        _rotDelta += 1;
+        accum = 0;
+      } else if (accum <= -UI_ENC_DETENT_STEPS) {
+        _rotDelta -= 1;
+        accum = 0;
+      }
+    }
   }
-  prevA = a;
-  prevB = b;
 
+  // Apply completed clicks to the menu
   if (_rotDelta != 0) {
     int step = (_rotDelta > 0) ? 1 : -1;
     _rotDelta = 0;
 
     if (_page == UiPage::Excite) {
       _exciteId += step;
-      if (_exciteId < 0) _exciteId = 15;
+      if (_exciteId < 0)  _exciteId = 15;
       if (_exciteId > 15) _exciteId = 0;
     } else {
       int p = (int)_page + step;
@@ -109,11 +133,11 @@ void DisplayUI::tick(OpticalBody& body) {
       if (p >= (int)UiPage::COUNT) p = 0;
       _page = (UiPage)p;
     }
-    _lastDraw = 0;   // force redraw
+    _lastDraw = 0;   // force immediate redraw
   }
 
-  // ---------- Buttons (Confirm / Encoder SW / Return) ----------
-  if (now - _lastBtn > 45) {
+  // ---- Buttons ----
+  if (now - _lastBtn > 40) {
     _lastBtn = now;
 
     static bool prevConfirm = 1, prevReturn = 1, prevSw = 1;
@@ -121,61 +145,33 @@ void DisplayUI::tick(OpticalBody& body) {
     bool ret     = digitalRead(UI_RETURN_PIN);
     bool sw      = digitalRead(UI_ENC_SW_PIN);
 
-    // active LOW
-    if (confirm == 0 && prevConfirm == 1) {
-      onConfirm();
-      _lastDraw = 0;
-    }
-    if (sw == 0 && prevSw == 1) {
-      onConfirm();          // encoder push = select
-      _lastDraw = 0;
-    }
-    if (ret == 0 && prevReturn == 1) {
-      onReturn();
-      _lastDraw = 0;
-    }
+    if (confirm == 0 && prevConfirm == 1) { onConfirm(); _lastDraw = 0; }
+    if (sw == 0 && prevSw == 1)           { onConfirm(); _lastDraw = 0; }
+    if (ret == 0 && prevReturn == 1)      { onReturn();  _lastDraw = 0; }
 
     prevConfirm = confirm;
     prevReturn  = ret;
     prevSw      = sw;
   }
 
-  // ---------- Draw ----------
-  if (now - _lastDraw > 60) {
+  // ---- Draw ----
+  if (now - _lastDraw > 50) {
     _lastDraw = now;
     draw(body);
   }
 }
 
-void DisplayUI::handleInput() {
-  // kept for header compatibility; logic is inline in tick()
-}
+void DisplayUI::handleInput() {}
 
 void DisplayUI::onConfirm() {
   switch (_page) {
-    case UiPage::Status:
-      // nothing — just stay
-      break;
-    case UiPage::Identity:
-      _doVerify = true;
-      break;
-    case UiPage::Mode:
-      _held = !_held;
-      break;
-    case UiPage::Excite:
-      _doExcite = true;
-      break;
-    case UiPage::Stream:
-      _streaming = !_streaming;
-      break;
-    case UiPage::Dump:
-      _doDump = true;
-      break;
-    case UiPage::Calibrate:
-      _doMap = true;
-      break;
-    default:
-      break;
+    case UiPage::Identity:  _doVerify = true; break;
+    case UiPage::Mode:      _held = !_held; break;
+    case UiPage::Excite:    _doExcite = true; break;
+    case UiPage::Stream:    _streaming = !_streaming; break;
+    case UiPage::Dump:      _doDump = true; break;
+    case UiPage::Calibrate: _doMap = true; break;
+    default: break;
   }
 }
 
@@ -188,7 +184,6 @@ void DisplayUI::draw(OpticalBody& body) {
   _display.setTextSize(1);
   _display.setTextColor(SH110X_WHITE);
 
-  // Title
   const char* titles[] = {
     "STATUS", "IDENTITY", "MODE", "EXCITE",
     "STREAM", "DUMP", "CALIBRATE"
@@ -197,7 +192,6 @@ void DisplayUI::draw(OpticalBody& body) {
   _display.print("> ");
   _display.println(titles[(int)_page]);
   _display.drawFastHLine(0, 10, 128, SH110X_WHITE);
-
   _display.setCursor(0, 14);
 
   switch (_page) {
@@ -207,52 +201,52 @@ void DisplayUI::draw(OpticalBody& body) {
       _display.println(_held ? "HELD" : "PASSIVE");
       _display.print("Stream: ");
       _display.println(_streaming ? "ON" : "OFF");
-      _display.println("Turn=nav  Click=ok");
+      _display.println("Click turn = nav");
       break;
 
     case UiPage::Identity:
       _display.println("Check identity");
-      _display.println("");
-      _display.println("Click = VERIFY");
-      _display.println("Back  = Status");
+      _display.println();
+      _display.println("Push = VERIFY");
+      _display.println("Back = Status");
       break;
 
     case UiPage::Mode:
       _display.print("Current: ");
       _display.println(_held ? "HELD" : "PASSIVE");
-      _display.println("");
-      _display.println("Click = toggle");
-      _display.println("Back  = Status");
+      _display.println();
+      _display.println("Push = toggle");
+      _display.println("Back = Status");
       break;
 
     case UiPage::Excite:
       _display.print("Laser: ");
       _display.println(_exciteId);
-      _display.println("Turn = change");
-      _display.println("Click = FIRE");
-      _display.println("Back  = Status");
+      _display.println("Click turn = change");
+      _display.println("Push = FIRE");
+      _display.println("Back = Status");
       break;
 
     case UiPage::Stream:
       _display.print("Stream: ");
       _display.println(_streaming ? "ON" : "OFF");
-      _display.println("");
-      _display.println("Click = toggle");
-      _display.println("Back  = Status");
+      _display.println();
+      _display.println("Push = toggle");
+      _display.println("Back = Status");
       break;
 
     case UiPage::Dump:
       _display.println("Raw ADC dump");
-      _display.println("");
-      _display.println("Click = DUMP");
-      _display.println("Back  = Status");
+      _display.println();
+      _display.println("Push = DUMP");
+      _display.println("Back = Status");
       break;
 
     case UiPage::Calibrate:
       _display.println("Full self-map");
-      _display.println("");
-      _display.println("Click = MAP");
-      _display.println("Back  = Status");
+      _display.println();
+      _display.println("Push = MAP");
+      _display.println("Back = Status");
       break;
 
     default:
