@@ -1,12 +1,13 @@
 #pragma once
 
 /**
- * display_ui.h
+ * display_ui.h — DKARDU EC11 + SH1106 local controls
  *
- * Optional local controls for optical-body-s3 using the
- * DKARDU EC11 Rotary Encoder + 1.3" SH1106 OLED integrated module.
+ * -D OPTICAL_UI=1
  *
- * Enabled with -D OPTICAL_UI=1
+ * Turn  = navigate pages (quadrature A/B, 1 detent = 1 step)
+ * Push  = select / on Excite: edit id then fire
+ * Back  = Status
  */
 
 #include <Arduino.h>
@@ -54,13 +55,6 @@ public:
 
 private:
   Adafruit_SH1106G _display;
-
-  volatile int8_t _rotDelta = 0;
-  volatile bool   _encPressed = false;
-  bool _lastEncA = false;
-
-  bool _confirmPressed = false;
-  bool _returnPressed = false;
 
   UiPage _page = UiPage::Status;
   int    _exciteId = 0;
