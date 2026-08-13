@@ -23,69 +23,7 @@
 #define UI_OLED_ADDR 0x3C
 #endif
 
-/*
- * EC11 decoder
- * ------------
- * Standard 2-bit gray code on A/B.
- * Most 20-detent EC11 modules produce 4 gray transitions per click.
- * We accumulate those and emit exactly one step when a detent completes.
- *
- * If your module is 2 transitions/detent, set UI_ENC_DETENT to 2 in platformio.ini.
- */
-#ifndef UI_ENC_DETENT
-#define UI_ENC_DETENT 4
-#endif
-
 DisplayUI* DisplayUI::_instance = nullptr;
-
-// ---------------------------------------------------------------------------
-// Decoder only: returns -1, 0, or +1
-// ---------------------------------------------------------------------------
-static int8_t readEncoderStep() {
-  static const int8_t gray[16] = {
-     0, -1,  1,  0,
-     1,  0,  0, -1,
-    -1,  0,  0,  1,
-     0,  1, -1,  0
-  };
-
-  static uint8_t last = 0;
-  static int16_t acc  = 0;
-
-  uint8_t a = digitalRead(UI_ENC_A_PIN) ? 1 : 0;
-  uint8_t b = digitalRead(UI_ENC_B_PIN) ? 1 : 0;
-  uint8_t now = (a << 1) | b;
-
-  if (now == last) return 0;
-
-  int8_t delta = gray[((last << 2) | now) & 15];
-  last = now;
-  if (delta == 0) return 0;
-
-  acc += delta;
-
-  if (acc >= UI_ENC_DETENT) {
-    acc = 0;
-    return 1;
-  }
-  if (acc <= -UI_ENC_DETENT) {
-    acc = 0;
-    return -1;
-  }
-  return 0;
-}
-
-// ---------------------------------------------------------------------------
-// Buttons: true once on clean press (active low), with quiet window after turn
-// ---------------------------------------------------------------------------
-static bool pressed(uint8_t pin, bool& prev, bool quiet) {
-  bool v = digitalRead(pin);
-  bool edge = (!v && prev && quiet);
-  prev = v;
-  return edge;
-}
-
-// ---------------------------------------------------------------------------
 
 DisplayUI::DisplayUI()
   : _display(128, 64, &Wire, -1) {}
@@ -116,12 +54,10 @@ bool DisplayUI::begin() {
   _display.setTextColor(SH110X_WHITE);
   _display.setCursor(0, 0);
   _display.println(F("optical-body-s3"));
-  _display.println(F("Turn = move"));
-  _display.println(F("Push = select"));
+  _display.println(F("Turn=move Push=ok"));
   _display.display();
-  delay(400);
+  delay(300);
 
-  Serial.println(F("[UI] ok"));
   return true;
 }
 
@@ -131,36 +67,54 @@ void DisplayUI::handleInput() {}
 
 void DisplayUI::tick(OpticalBody& body) {
   uint32_t now = millis();
-  static uint32_t lastTurn = 0;
 
-  // --- Navigation (turn only) ---
-  int8_t step = readEncoderStep();
-  if (step != 0) {
-    lastTurn = now;
+  /*
+   * Simple menu encoder:
+   * - Watch falling edge on A only (one per detent on typical EC11)
+   * - Direction from B at that moment
+   * - Minimum 50 ms between accepted steps so one click != four steps
+   */
+  static uint8_t lastA = 1;
+  static uint32_t lastStepAt = 0;
+  static uint32_t lastTurnAt = 0;
+
+  uint8_t a = digitalRead(UI_ENC_A_PIN);
+  uint8_t b = digitalRead(UI_ENC_B_PIN);
+
+  if (lastA == 1 && a == 0 && (now - lastStepAt) >= 50) {
+    lastStepAt = now;
+    lastTurnAt = now;
+
+    int dir = (b == 1) ? 1 : -1;
 
     if (_page == UiPage::Excite) {
-      _exciteId += step;
+      _exciteId += dir;
       if (_exciteId < 0)  _exciteId = 15;
       if (_exciteId > 15) _exciteId = 0;
     } else {
-      int p = (int)_page + step;
+      int p = (int)_page + dir;
       if (p < 0) p = (int)UiPage::COUNT - 1;
       if (p >= (int)UiPage::COUNT) p = 0;
       _page = (UiPage)p;
     }
     _lastDraw = 0;
   }
+  lastA = a;
 
-  // --- Select / Back (push only; blocked briefly after turn) ---
-  bool quiet = (now - lastTurn) > 180;
-
-  if (now - _lastBtn > 25) {
+  // Push = select only. Ignore encoder SW for 200 ms after a turn.
+  if (now - _lastBtn > 30) {
     _lastBtn = now;
-    static bool prevC = true, prevR = true, prevS = true;
+    static bool pc = 1, pr = 1, ps = 1;
+    bool c = digitalRead(UI_CONFIRM_PIN);
+    bool r = digitalRead(UI_RETURN_PIN);
+    bool s = digitalRead(UI_ENC_SW_PIN);
+    bool quiet = (now - lastTurnAt) > 200;
 
-    if (pressed(UI_CONFIRM_PIN, prevC, quiet)) { onConfirm(); _lastDraw = 0; }
-    if (pressed(UI_ENC_SW_PIN,  prevS, quiet)) { onConfirm(); _lastDraw = 0; }
-    if (pressed(UI_RETURN_PIN,  prevR, true))  { onReturn();  _lastDraw = 0; }
+    if (!c && pc && quiet) { onConfirm(); _lastDraw = 0; }
+    if (!s && ps && quiet) { onConfirm(); _lastDraw = 0; }
+    if (!r && pr)          { onReturn();  _lastDraw = 0; }
+
+    pc = c; pr = r; ps = s;
   }
 
   if (now - _lastDraw > 40) {
@@ -171,12 +125,12 @@ void DisplayUI::tick(OpticalBody& body) {
 
 void DisplayUI::onConfirm() {
   switch (_page) {
-    case UiPage::Identity:  _doVerify = true;       break;
-    case UiPage::Mode:      _held = !_held;         break;
-    case UiPage::Excite:    _doExcite = true;       break;
+    case UiPage::Identity:  _doVerify = true; break;
+    case UiPage::Mode:      _held = !_held; break;
+    case UiPage::Excite:    _doExcite = true; break;
     case UiPage::Stream:    _streaming = !_streaming; break;
-    case UiPage::Dump:      _doDump = true;         break;
-    case UiPage::Calibrate: _doMap = true;          break;
+    case UiPage::Dump:      _doDump = true; break;
+    case UiPage::Calibrate: _doMap = true; break;
     default: break;
   }
 }
@@ -197,8 +151,7 @@ void DisplayUI::draw(OpticalBody& body) {
   };
 
   _display.setCursor(0, 0);
-  _display.print('>');
-  _display.print(' ');
+  _display.print(F("> "));
   _display.println(titles[(int)_page]);
   _display.drawFastHLine(0, 10, 128, SH110X_WHITE);
   _display.setCursor(0, 14);
@@ -222,7 +175,7 @@ void DisplayUI::draw(OpticalBody& body) {
     case UiPage::Excite:
       _display.print(F("Laser "));
       _display.println(_exciteId);
-      _display.println(F("Turn = id"));
+      _display.println(F("Turn = change"));
       _display.println(F("Push = FIRE"));
       break;
     case UiPage::Stream:
@@ -239,7 +192,6 @@ void DisplayUI::draw(OpticalBody& body) {
     default:
       break;
   }
-
   _display.display();
 }
 
