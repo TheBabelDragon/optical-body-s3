@@ -126,6 +126,39 @@ CANH / CANL → bus. Terminate both ends of the bus with 120 Ω.
 
 ---
 
+## DKARDU EC11 + 1.3″ SH1106 OLED module (local UI)
+
+Integrated board: 1.3″ white OLED (SH1106, I²C) + EC11 rotary encoder + Confirm + Return buttons.
+
+**Firmware defaults** (`OPTICAL_UI=1` in `platformio.ini`):
+
+| Module signal     | ESP32-S3 GPIO | Notes |
+|-------------------|---------------|-------|
+| OLED VCC          | 3.3 V         | Do not use 5 V if module is 3.3 V only |
+| OLED GND          | GND           | |
+| OLED SDA          | **8**         | Shares existing I²C bus |
+| OLED SCL          | **9**         | Shares existing I²C bus |
+| Encoder A         | **1**         | Interrupt |
+| Encoder B         | **2**         | |
+| Encoder SW        | **3**         | Push = Confirm |
+| Confirm button    | **16**        | |
+| Return / Back     | **17**        | |
+
+I²C address of the OLED is almost always **0x3C**.
+
+The module usually ships with a short pin-header cable. Match the silkscreen labels on the module to the table above. Internal pull-ups are enabled in firmware for the encoder and buttons.
+
+**Menu (Phase 0):**
+
+- Status · Identity · Mode · Excite · Stream · Dump · Calibrate
+- Rotate encoder to change page / value
+- Confirm (or encoder push) to act
+- Return always jumps back to Status
+
+To disable the UI entirely, comment out `-D OPTICAL_UI=1` and rebuild.
+
+---
+
 ## Suggested minimal optical bring-up chain
 
 ```
@@ -141,6 +174,9 @@ MCP23017 SDA/SCL → same I²C bus
 
 MCP2518FD SPI → GPIO 10–14
 MCP2518FD CANH/CANL → Field Bus + SH-C31G host
+
+DKARDU OLED SDA/SCL → GPIO 8/9
+DKARDU encoder + buttons → GPIO 1,2,3,16,17
 ```
 
 ---
