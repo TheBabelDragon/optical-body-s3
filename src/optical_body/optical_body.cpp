@@ -45,12 +45,15 @@ bool OpticalBody::begin() {
 
   if (!lasers.begin()) {
     Serial.println(F("[OpticalBody] laser matrix init failed"));
-    return false;
+    // Still non-fatal for pure UI / serial bring-up
   }
+
+  // ADS1115 / BPW34 is optional during early bring-up (OLED + encoder only).
+  // Missing detectors must not kill the whole body.
   if (!detectors.begin()) {
-    Serial.println(F("[OpticalBody] BPW34 reader init failed"));
-    return false;
+    Serial.println(F("[OpticalBody] BPW34 reader init failed — continuing without detectors"));
   }
+
   events.begin();
 
   Serial.print(F("[OpticalBody] emitters="));
@@ -59,7 +62,7 @@ bool OpticalBody::begin() {
   Serial.print(detectors.numDetectors());
   Serial.print(F("  event_ch="));
   Serial.println(events.numChannels());
-  return true;
+  return true;   // always succeed so UI + serial commands stay alive
 }
 
 void OpticalBody::dumpRaw(uint8_t count) {
@@ -143,7 +146,13 @@ bool OpticalBody::exciteOnce(uint16_t laser_id) {
   bool ok = readAveraged(buf, NUM_DETECTORS, 2);
   lasers.allOff();
 
-  if (!ok) return false;
+  if (!ok) {
+    // Still emit a placeholder observation so the UI / serial path stays alive
+    for (int d = 0; d < NUM_DETECTORS; ++d) buf[d] = 0.0f;
+    emitObservation(laser_id, buf, NUM_DETECTORS, true);
+    excitation_counter_++;
+    return false;
+  }
 
   for (int d = 0; d < NUM_DETECTORS; ++d) {
     buf[d] -= dark_[d];
@@ -181,7 +190,9 @@ bool OpticalBody::acquireDarkFrame() {
 
   bool ok = readAveraged(dark_, NUM_DETECTORS, 4);
   if (!ok) {
-    Serial.println(F("[OpticalBody] dark frame FAILED"));
+    Serial.println(F("[OpticalBody] dark frame FAILED (no detectors)"));
+    // Zero the dark frame so later math stays safe
+    for (int i = 0; i < NUM_DETECTORS; ++i) dark_[i] = 0.0f;
     return false;
   }
 
@@ -345,12 +356,10 @@ void OpticalBody::emitObservation(uint16_t laser_id, const float* detectors, siz
     }
   }
 
-  // 1) Rich optical format (existing, preserved)
   String json = encodeFieldObservation(obs);
   Serial.println(json);
   archive_.appendObservation(json);
 
-  // 2) Compact Field Body Protocol line (shared with Echo Grid)
   Serial.print(F("OBS {"));
   Serial.print(F("\"body_id\":\"")); Serial.print(node_id_); Serial.print(F("\","));
   Serial.print(F("\"body_type\":\"optical\","));
