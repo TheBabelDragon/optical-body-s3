@@ -6,8 +6,8 @@ Wire exactly this. Pins are compile-time defaults in `platformio.ini`.
 
 | Function | GPIO | Goes to |
 |----------|------|---------|
-| I²C SDA | **8** | ADS1115 SDA, MCP23017 SDA, (PCA9548A SDA, INA219 SDA) |
-| I²C SCL | **9** | ADS1115 SCL, MCP23017 SCL, (PCA9548A SCL, INA219 SCL) |
+| I²C SDA | **8** | ADS1115 SDA, MCP23017 SDA, OLED SDA, (PCA9548A SDA, INA219 SDA) |
+| I²C SCL | **9** | ADS1115 SCL, MCP23017 SCL, OLED SCL, (PCA9548A SCL, INA219 SCL) |
 | Mux S0 | **4** | CD74HC4067 S0 |
 | Mux S1 | **5** | CD74HC4067 S1 |
 | Mux S2 | **6** | CD74HC4067 S2 |
@@ -18,8 +18,13 @@ Wire exactly this. Pins are compile-time defaults in `platformio.ini`.
 | CAN SPI MISO | **13** | MCP2518FD MISO/SDO |
 | CAN SPI CS | **10** | MCP2518FD CS/nCS |
 | CAN SPI INT | **14** | MCP2518FD INT |
+| UI Encoder A | **1** | DKARDU ENC_A |
+| UI Encoder B | **2** | DKARDU ENC_B |
+| UI Encoder SW | **3** | DKARDU ENC_SW |
+| UI Confirm | **16** | DKARDU Confirm button |
+| UI Return | **17** | DKARDU Return / Back button |
 
-Power: **3.3 V** and **GND** to every module (ADS, mux, MCP23017, MCP2518FD as required by that board).
+Power: **3.3 V** and **GND** to every module (ADS, mux, MCP23017, MCP2518FD, DKARDU OLED as required by that board).
 
 ---
 
@@ -73,12 +78,28 @@ MCP2518FD CANH/CANL → twisted pair → SH-C31G host
 
 ---
 
+## Local UI (DKARDU EC11 + SH1106)
+
+```
+OLED SDA/SCL → GPIO 8 / 9   (same I²C bus, address 0x3C)
+Encoder A/B/SW → GPIO 1 / 2 / 3
+Confirm → GPIO 16
+Return  → GPIO 17
+VCC → 3.3 V
+GND → GND
+```
+
+See `HARDWARE_PINOUT.md` for the full DKARDU section and menu description.
+
+---
+
 ## I²C address map (Phase 0)
 
 | Device | Address | Notes |
 |--------|---------|-------|
 | ADS1115 #0 | **0x48** | ADDR→GND |
 | MCP23017 | **0x20** | A0–A2→GND |
+| SH1106 OLED | **0x3C** | DKARDU module |
 | PCA9548A (optional) | 0x70 | when you need more I²C branches |
 | INA219 (optional) | 0x40 | default |
 | FRAM (existing) | 0x50 | already in firmware |
@@ -87,10 +108,11 @@ MCP2518FD CANH/CANL → twisted pair → SH-C31G host
 
 ## Bring-up order
 
-1. Power + I²C only (ADS @ 0x48) → serial `DUMP`
+1. Power + I²C only (ADS @ 0x48 + OLED @ 0x3C) → serial `DUMP` + OLED shows UI
 2. Add mux S0–S3/EN/SIG → `DUMP` again, change light on C0
 3. Add MCP23017 + one LM393 → watch event mask later
 4. Add MCP2518FD + SH-C31G → `NODE_HELLO` / heartbeat on CAN-FD
+5. Wire encoder + buttons last (or earlier if you want local control during bring-up)
 
 ---
 
