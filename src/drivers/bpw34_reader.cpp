@@ -50,7 +50,7 @@ bool BPW34Reader::begin() {
   }
 
   if (num_ads_ == 0) {
-    Serial.println(F("[BPW34] no ADS1115 found — check wiring / ADDR pins"));
+    Serial.println(F("[BPW34] no ADS1115 — detector reads disabled"));
     return false;
   }
 
@@ -70,12 +70,15 @@ bool BPW34Reader::readAll(float* out, size_t max_n) {
 #ifdef OPTICAL_USE_SYNTHETIC
   return readSynthetic(out, max_n);
 #else
+  if (num_ads_ == 0) return false;   // CRITICAL: do not touch I2C
   return readReal(out, max_n);
 #endif
 }
 
 bool BPW34Reader::readReal(float* out, size_t max_n) {
 #ifndef OPTICAL_USE_SYNTHETIC
+  if (num_ads_ == 0) return false;
+
   size_t n = min(max_n, (size_t)num_detectors_);
 
   for (size_t i = 0; i < n; ++i) {
@@ -110,6 +113,10 @@ void BPW34Reader::dumpRaw(uint8_t count) {
 #ifdef OPTICAL_USE_SYNTHETIC
   Serial.println(F("[BPW34] dumpRaw skipped (synthetic mode)"));
 #else
+  if (num_ads_ == 0) {
+    Serial.println(F("[BPW34] no ADS1115 — dump skipped"));
+    return;
+  }
   if (count > 32) count = 32;
   Serial.println(F("[BPW34] raw volts:"));
   for (uint8_t i = 0; i < count; ++i) {
