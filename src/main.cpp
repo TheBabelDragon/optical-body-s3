@@ -39,8 +39,7 @@ static RunMode mode = RunMode::Passive;
 
 void setup() {
   Serial.begin(115200);
-  delay(800);
-
+  delay(1000);                       // give USB-CDC time to enumerate
   Serial.println();
   Serial.println(F("========================================"));
   Serial.println(F("  optical-body-s3  —  MetaField body"));
@@ -52,20 +51,28 @@ void setup() {
   Serial.println(F("========================================"));
   Serial.print(F("Node ID : "));
   Serial.println(OPTICAL_BODY_NODE_ID);
+  Serial.flush();
 
   // Locked I²C pins (WIRING_PHASE0.md)
+  Serial.println(F("[Boot] starting I2C..."));
+  Serial.flush();
   Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN);
   Serial.print(F("[I2C] SDA=GPIO"));
   Serial.print(WIRE_SDA_PIN);
   Serial.print(F(" SCL=GPIO"));
   Serial.println(WIRE_SCL_PIN);
+  Serial.flush();
 
   // --- Field Bus (non-fatal if MCP2518FD not present yet) ---
+  Serial.println(F("[Boot] Field Bus begin..."));
+  Serial.flush();
   bus.begin();
   uint8_t caps = FB_CAP_OPTICAL | FB_CAP_ADC | FB_CAP_SENSOR | FB_CAP_STORAGE;
   bus.sendHello(FB_FIRMWARE_VER, caps);
   bus.setState(FB_STATE_BOOT);
 
+  Serial.println(F("[Boot] OpticalBody begin..."));
+  Serial.flush();
   if (!body.begin()) {
     Serial.println(F("[FATAL] OpticalBody::begin() failed"));
     bus.setState(FB_STATE_ERROR);
@@ -75,7 +82,9 @@ void setup() {
     }
   }
 
-  // Optional UI (shares I²C)
+  // Optional UI (shares I²C) — now non-blocking if OLED missing
+  Serial.println(F("[Boot] UI begin..."));
+  Serial.flush();
   if (!ui.begin()) {
     Serial.println(F("[UI] continuing without display"));
   }
@@ -99,6 +108,7 @@ void setup() {
   bus.setState(FB_STATE_READY);
   bus.sendStatus(FB_STATE_READY);
   Serial.println(F("[Boot] passive loop + Field Bus heartbeat"));
+  Serial.flush();
 }
 
 void loop() {
