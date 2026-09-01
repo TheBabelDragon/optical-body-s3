@@ -16,44 +16,33 @@ BPW34
 
 ### LM393 = fast event layer (reflexes)
 
-Use for:
-
-- threshold crossings
-- beam interruption
-- sudden changes
-- timing events
-- fast pattern detection
-
-Example:
-
-```
-Laser 7 ON
-BPW34 rises above threshold
-LM393 → EVENT = 1
-```
-
-MetaField gets a clean **“something changed”** signal without waiting on a full ADC scan.
+Use for threshold crossings, beam interruption, sudden changes, timing events.
 
 ### ADS1115 = analog field layer (perception)
 
-Use for:
+Use for calibration / dark frame, transfer matrix / OpticalFingerprint, intensity mapping, gradual changes, confidence and anomaly.
 
-- calibration / dark frame
-- transfer matrix / OpticalFingerprint
-- intensity mapping
-- gradual changes
-- confidence and anomaly
+---
 
-Example:
+## Dark track (isolation memory)
+
+Dark is not a single subtracted snapshot. Emitters OFF is a **voltage stance**.
+Per-detector `q` integrates `(raw_dark - baseline)` and leaks:
 
 ```
-Laser 7 ON
-Detector 42: 0.713
-Detector 43: 0.284
-Detector 44: 0.052
+HOLD   → quiet leak, isolation OK
+CHARGE → residual still rising after light (traps / mux leftover)
+RELAX  → q decaying toward baseline
+FAULT  → leak or offset too large
 ```
 
-This is the optical fingerprint itself.
+One-hot isolation waits in `allOff` until HOLD/RELAX (or marks `health=partial`).
+Optical rows subtract `baseline + q`, not the frozen cal frame alone.
+
+Firmware: `src/calibration/dark_track.*` used by `OpticalBody::isolateDark`.
+
+This is memristor-shaped software on the diode leak. Not a discrete memristor IC.
+Do not put that state on the bias rail that sets `C_d`.
 
 ---
 
@@ -75,70 +64,6 @@ Event stream                  Analog stream
               MetaField / Aurora
 ```
 
-- **ADCs characterize everything** (full field, calibration, geometry).
-- **Comparators watch important regions** (not necessarily every diode at first).
-
----
-
-## Realistic first build (100 BPW34)
-
-### Analog measurement
-
-```
-100 BPW34
-    |
-10× CD74HC4067
-    |
-4× ADS1115
-    |
-I2C → ESP32-S3
-```
-
-### Event measurement (selected / high-value channels)
-
-```
-BPW34 groups (subset)
-    |
-LM393 comparators
-    |
-GPIO and/or MCP23017
-    |
-ESP32-S3
-```
-
-You do **not** need one LM393 per diode immediately. Start with a sparse event mask over interesting faces / clusters; expand later.
-
----
-
-## Resource impact on ESP32-S3
-
-```
-I2C
- ├── ADS1115 ×4
- ├── FRAM (MB85RC256V)
- ├── MCP23017 (optional expansion)
-GPIO
- ├── MUX select lines (CD74HC4067)
- ├── LM393 event inputs (sparse)
- ├── laser control / status
-```
-
-Manageable. No need to burn the whole GPIO bank on events day one.
-
----
-
-## Biological analogy (intentional)
-
-| Layer        | Hardware     | Role              |
-|--------------|--------------|-------------------|
-| Reflexes     | LM393        | fast events       |
-| Perception   | ADS1115      | analog field      |
-| Memory       | FRAM + SD    | identity + archive|
-| Interpretation | MetaField  | meaning           |
-| Coordination | Aurora       | experiments       |
-
-Fast reactions without sacrificing the high-resolution data needed to learn geometry.
-
 ---
 
 ## Firmware mapping
@@ -147,10 +72,10 @@ Fast reactions without sacrificing the high-resolution data needed to learn geom
 |---------|--------------------------------|---------------------------------|
 | Analog  | `drivers/bpw34_reader`         | float vector 0..1               |
 | Event   | `drivers/event_reader`         | bitmask / list of active edges  |
-| Combined| `FieldObservation` + optional `events[]` in modality | host / MetaField |
+| Dark    | `calibration/dark_track`       | HOLD/CHARGE/RELAX/FAULT + q     |
+| Combined| `FieldObservation`             | host / MetaField                |
 
-Calibration (dark frame, transfer matrix, OpticalFingerprint) uses **analog only**.  
-Passive loop and future adaptive probing can fuse both streams.
+Calibration uses analog + dark track. Passive loop fuses both streams.
 
 ---
 
