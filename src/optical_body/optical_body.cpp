@@ -45,11 +45,8 @@ bool OpticalBody::begin() {
 
   if (!lasers.begin()) {
     Serial.println(F("[OpticalBody] laser matrix init failed"));
-    // Still non-fatal for pure UI / serial bring-up
   }
 
-  // ADS1115 / BPW34 is optional during early bring-up (OLED + encoder only).
-  // Missing detectors must not kill the whole body.
   if (!detectors.begin()) {
     Serial.println(F("[OpticalBody] BPW34 reader init failed — continuing without detectors"));
   }
@@ -62,7 +59,7 @@ bool OpticalBody::begin() {
   Serial.print(detectors.numDetectors());
   Serial.print(F("  event_ch="));
   Serial.println(events.numChannels());
-  return true;   // always succeed so UI + serial commands stay alive
+  return true;
 }
 
 void OpticalBody::dumpRaw(uint8_t count) {
@@ -101,8 +98,9 @@ float OpticalBody::verifyIdentity(bool* out_unchanged, float threshold) {
     delay(5);
     if (!ok) continue;
 
+    isolateDark(2);
     for (int d = 0; d < NUM_DETECTORS; ++d) {
-      float corrected = buf[d] - dark_[d];
+      float corrected = buf[d] - dark_track_.effective((uint8_t)d);
       if (corrected < 0.0f) corrected = 0.0f;
       float expected = identity_.getExpected((uint16_t)laser, (uint16_t)d);
       sum_abs += fabsf(corrected - expected);
@@ -147,17 +145,14 @@ bool OpticalBody::exciteOnce(uint16_t laser_id) {
   lasers.allOff();
 
   if (!ok) {
-    // Still emit a placeholder observation so the UI / serial path stays alive
     for (int d = 0; d < NUM_DETECTORS; ++d) buf[d] = 0.0f;
     emitObservation(laser_id, buf, NUM_DETECTORS, true);
     excitation_counter_++;
     return false;
   }
 
-  for (int d = 0; d < NUM_DETECTORS; ++d) {
-    buf[d] -= dark_[d];
-    if (buf[d] < 0.0f) buf[d] = 0.0f;
-  }
+  isolateDark(2);
+  subtractEffectiveDark(buf, NUM_DETECTORS);
 
   emitObservation(laser_id, buf, NUM_DETECTORS, true);
   excitation_counter_++;
@@ -184,15 +179,15 @@ bool OpticalBody::readAveraged(float* out, size_t n, uint16_t samples) {
 }
 
 bool OpticalBody::acquireDarkFrame() {
-  Serial.println(F("[OpticalBody] Dark frame — all emitters OFF"));
+  Serial.println(F("[OpticalBody] Dark frame — all emitters OFF (voltage stance)"));
   lasers.allOff();
   delay(30);
 
   bool ok = readAveraged(dark_, NUM_DETECTORS, 4);
   if (!ok) {
     Serial.println(F("[OpticalBody] dark frame FAILED (no detectors)"));
-    // Zero the dark frame so later math stays safe
     for (int i = 0; i < NUM_DETECTORS; ++i) dark_[i] = 0.0f;
+    dark_track_.reset();
     return false;
   }
 
@@ -203,7 +198,34 @@ bool OpticalBody::acquireDarkFrame() {
   Serial.println(mean, 4);
 
   fingerprint_.setDark(dark_, NUM_DETECTORS);
+  dark_track_.setBaseline(dark_, NUM_DETECTORS);
   return true;
+}
+
+bool OpticalBody::isolateDark(uint8_t extra_passes) {
+  lasers.allOff();
+  delay(8);
+
+  float raw[NUM_DETECTORS];
+  for (uint8_t p = 0; p <= extra_passes; ++p) {
+    if (!readAveraged(raw, NUM_DETECTORS, 1)) return false;
+    dark_track_.update(raw, NUM_DETECTORS);
+    if (dark_track_.isolationOk()) return true;
+    delay(8);
+  }
+  Serial.print(F("[OpticalBody] dark isolation pending  mean_q="));
+  Serial.print(dark_track_.meanQ(), 4);
+  Serial.print(F("  fault_mask=0x"));
+  Serial.println(dark_track_.faultMask(), HEX);
+  return dark_track_.isolationOk();
+}
+
+void OpticalBody::subtractEffectiveDark(float* buf, size_t n) {
+  if (!buf) return;
+  for (size_t d = 0; d < n && d < (size_t)NUM_DETECTORS; ++d) {
+    buf[d] -= dark_track_.effective((uint8_t)d);
+    if (buf[d] < 0.0f) buf[d] = 0.0f;
+  }
 }
 
 void OpticalBody::runSelfMap() {
@@ -231,6 +253,10 @@ void OpticalBody::runSelfMap() {
     Serial.print(laser);
     Serial.print(F(" → isolating…"));
 
+    if (!isolateDark(4)) {
+      Serial.println(F(" DARK_BUSY"));
+    }
+
     float accum[NUM_DETECTORS];
     for (int d = 0; d < NUM_DETECTORS; ++d) accum[d] = 0.0f;
     bool any_ok = false;
@@ -247,8 +273,9 @@ void OpticalBody::runSelfMap() {
       if (!ok) continue;
       any_ok = true;
 
+      isolateDark(1);
       for (int d = 0; d < NUM_DETECTORS; ++d) {
-        float c = buf[d] - dark_[d];
+        float c = buf[d] - dark_track_.effective((uint8_t)d);
         if (c < 0.0f) c = 0.0f;
         accum[d] += c;
       }
@@ -301,10 +328,8 @@ void OpticalBody::tickPassive() {
   lasers.allOff();
 
   if (ok) {
-    for (int d = 0; d < NUM_DETECTORS; ++d) {
-      buf[d] -= dark_[d];
-      if (buf[d] < 0.0f) buf[d] = 0.0f;
-    }
+    isolateDark(1);
+    subtractEffectiveDark(buf, NUM_DETECTORS);
     emitObservation(laser, buf, NUM_DETECTORS, true);
   }
   excitation_counter_++;
@@ -318,7 +343,7 @@ void OpticalBody::emitObservation(uint16_t laser_id, const float* detectors, siz
   obs.excitation_id  = (int32_t)excitation_counter_;
   obs.geometry_state = calibrated_ ? "calibrated" : "calibrating";
   obs.timestamp      = String(millis());
-  obs.health         = "ok";
+  obs.health         = dark_track_.isolationOk() ? "ok" : "partial";
   obs.laser_id       = (int)laser_id;
   obs.schema_version = 1;
   obs.event_mask     = events.readMask();
