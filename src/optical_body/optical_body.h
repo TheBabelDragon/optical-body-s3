@@ -7,6 +7,7 @@
 #include "../memory/sd_archive.h"
 #include "../calibration/excitation_sequence.h"
 #include "../calibration/optical_fingerprint.h"
+#include "../calibration/dark_track.h"
 
 /**
  * OpticalBody
@@ -23,10 +24,7 @@ public:
   void runSelfMap();
   void tickPassive();
 
-  /** Fire one source, dark-correct, emit observation. Host-shaped light. */
   bool exciteOnce(uint16_t laser_id);
-
-  /** Bring-up: print raw ADC volts for first channels. */
   void dumpRaw(uint8_t count = 8);
 
   const char* nodeId() const { return node_id_; }
@@ -50,9 +48,12 @@ private:
 
   float dark_[NUM_DETECTORS];
   float transfer_[NUM_LASERS][NUM_DETECTORS];
+  DarkTrack dark_track_;
 
   void clearTransfer();
   bool acquireDarkFrame();
+  bool isolateDark(uint8_t extra_passes = 3);
+  void subtractEffectiveDark(float* buf, size_t n);
   bool readAveraged(float* out, size_t n, uint16_t samples);
   void emitObservation(uint16_t laser_id, const float* detectors, size_t n,
                        bool dark_corrected);
