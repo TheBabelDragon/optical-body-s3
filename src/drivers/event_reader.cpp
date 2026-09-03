@@ -1,21 +1,13 @@
 #include "event_reader.h"
 
-#ifdef OPTICAL_USE_SYNTHETIC
-#else
-  #include <Adafruit_MCP23X17.h>
-  static Adafruit_MCP23X17 mcp;
-#endif
+#include <Adafruit_MCP23X17.h>
+static Adafruit_MCP23X17 mcp;
 
 #ifndef EVENT_MCP_ADDR
 #define EVENT_MCP_ADDR 0x20
 #endif
 
 bool EventReader::begin() {
-#ifdef OPTICAL_USE_SYNTHETIC
-  num_channels_ = 0;
-  Serial.println(F("[Event] synthetic — 0 channels"));
-  return true;
-#else
   if (!mcp.begin_I2C(EVENT_MCP_ADDR)) {
     Serial.println(F("[Event] MCP23017 not found — LM393 stream disabled (sparse OK)"));
     num_channels_ = 0;
@@ -35,13 +27,9 @@ bool EventReader::begin() {
   Serial.print(EVENT_MCP_ADDR, HEX);
   Serial.println(F(")"));
   return true;
-#endif
 }
 
 uint32_t EventReader::readMask() {
-#ifdef OPTICAL_USE_SYNTHETIC
-  return 0;
-#else
   if (!mcp_ok_ || num_channels_ == 0) return 0;
 
   uint32_t mask = 0;
@@ -51,7 +39,6 @@ uint32_t EventReader::readMask() {
     }
   }
   return mask;
-#endif
 }
 
 int EventReader::listActive(uint8_t* active_ids, int max_n) {
