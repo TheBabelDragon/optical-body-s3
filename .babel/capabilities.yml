@@ -1,0 +1,60 @@
+capabilities:
+  - name: emit-field-observation
+    description: Encode FieldObservation as JSON from src/protocol/json_encoder.cpp.
+    inputs: []
+    outputs:
+      - name: FieldObservation
+        schema: field-observation.schema.json
+    operation: emit
+    side_effects:
+      - serial JSON line on USB
+    requires:
+      - ADS1115 present
+    produces:
+      - FieldObservation
+    safe: true
+    entry: encodeFieldObservation
+  - name: excite-laser
+    description: Shape one laser source once (EXCITE <id>). Does not change pin map.
+    inputs:
+      - name: excitation_id
+        type: integer
+    outputs:
+      - name: FieldObservation
+    operation: control
+    side_effects:
+      - drives a wired laser GPIO for one excitation
+      - does not rewrite platformio.ini pin map
+    requires:
+      - laser pin compiled != -1
+    produces:
+      - FieldObservation
+    safe: false
+    entry: serial EXCITE
+  - name: passive-scan
+    description: Resume cyclic detector scan without excitation.
+    inputs: []
+    outputs:
+      - name: FieldObservation
+    operation: observe
+    side_effects: []
+    requires:
+      - ADS1115
+    produces:
+      - FieldObservation
+    safe: true
+    entry: serial PASSIVE
+  - name: identity-verify
+    description: Identity probe versus FRAM (VERIFY).
+    inputs: []
+    outputs:
+      - name: identity
+    operation: mutate
+    side_effects:
+      - may persist identity in FRAM
+    requires:
+      - FRAM
+    produces:
+      - identity-record
+    safe: false
+    entry: serial VERIFY
