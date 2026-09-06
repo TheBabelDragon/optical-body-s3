@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "body_id": "optical-01",
+  "body_type": "optical",
+  "excitation_id": 3,
+  "geometry_state": "calibrated",
+  "timestamp": "12345678",
+  "health": "ok",
+  "modality": { "laser_id": 3, "event_mask": 0 },
+  "field_regions": [
+    { "region": "detector_03", "observed": 0.412, "confidence": 0.8, "anomaly": 0.01 }
+  ]
+}
