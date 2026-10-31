@@ -6,7 +6,7 @@
  * BPW34Reader
  *
  * Analog path: up to 4× ADS1115 + up to 4× CD74HC4067.
- * No synthetic ADC. If the converter is missing, begin() fails.
+ * Native ADS1115 driver (no Adafruit). If the converter is missing, begin() fails.
  */
 class BPW34Reader {
 public:
