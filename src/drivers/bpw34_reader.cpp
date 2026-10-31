@@ -1,9 +1,14 @@
 #include "bpw34_reader.h"
 #include "mux_controller.h"
+#include "ads1115.h"
 
-#include <Adafruit_ADS1X15.h>
+static ADS1115 ads[BPW34Reader::MAX_ADS] = {
+  ADS1115(0x48),
+  ADS1115(0x49),
+  ADS1115(0x4A),
+  ADS1115(0x4B),
+};
 
-static Adafruit_ADS1115 ads[BPW34Reader::MAX_ADS];
 static MuxController mux[BPW34Reader::MAX_ADS] = {
   MuxController(MUX_S0_PIN, MUX_S1_PIN, MUX_S2_PIN, MUX_S3_PIN, MUX_EN_PIN),
   MuxController(MUX_S0_PIN, MUX_S1_PIN, MUX_S2_PIN, MUX_S3_PIN, 16),
@@ -28,18 +33,20 @@ bool BPW34Reader::begin() {
       continue;
     }
 
-    if (!ads[i].begin(ADS_ADDR[i])) {
+    if (!ads[i].begin()) {
       Serial.print(F("[BPW34] ADS1115 not found at 0x"));
       Serial.println(ADS_ADDR[i], HEX);
       continue;
     }
-    ads[i].setGain(GAIN_ONE);
+    // ±4.096 V covers 3.3 V full-scale photodiode front-end with headroom
+    ads[i].setGain(ADS1115::Gain::PGA_4_096V);
+    ads[i].setDataRate(ADS1115::Rate::SPS_128);
     num_ads_++;
     Serial.print(F("[BPW34] ADS"));
     Serial.print(i);
     Serial.print(F(" @0x"));
     Serial.print(ADS_ADDR[i], HEX);
-    Serial.println(F(" ready"));
+    Serial.println(F(" ready (native driver)"));
   }
 
   if (num_ads_ == 0) {
@@ -83,7 +90,7 @@ bool BPW34Reader::readReal(float* out, size_t max_n) {
     }
     mux[ads_idx].select(ch);
 
-    int16_t raw = ads[ads_idx].readADC_SingleEnded(0);
+    int16_t raw = ads[ads_idx].readSingleEnded(0);
     float volts = ads[ads_idx].computeVolts(raw);
     out[i] = constrain(volts / BPW34_FULL_SCALE_V, 0.0f, 1.0f);
   }
@@ -111,7 +118,7 @@ void BPW34Reader::dumpRaw(uint8_t count) {
     }
     mux[ads_idx].select(ch);
 
-    int16_t raw = ads[ads_idx].readADC_SingleEnded(0);
+    int16_t raw = ads[ads_idx].readSingleEnded(0);
     float v = ads[ads_idx].computeVolts(raw);
     Serial.print(F("  d"));
     if (i < 10) Serial.print('0');
