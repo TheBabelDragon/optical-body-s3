@@ -1,0 +1,53 @@
+babel: "0.1"
+identity:
+  name: optical-body-s3
+  owner: TheBabelDragon
+  repo: TheBabelDragon/optical-body-s3
+  url: https://github.com/TheBabelDragon/optical-body-s3
+  kind: physical-body
+  version: "0.1.0"
+purpose: >
+  ESP32-S3 optical field node. Laser excitation plus BPW34 measurement body.
+  Emits FieldObservation packets. Does not run MetaField. Pins are compile-time
+  invariants in platformio.ini. This contract does not change wiring.
+status: operational
+entrypoints:
+  - kind: firmware
+    path: src/main.cpp
+  - kind: protocol
+    path: src/protocol/field_observation.h
+  - kind: encoder
+    path: src/protocol/json_encoder.cpp
+  - kind: serial
+    commands: [EXCITE, MAP, VERIFY, PASSIVE, DUMP]
+runtime:
+  language: C++
+  target: ESP32-S3
+  requires:
+    - PlatformIO
+    - ADS1115 on I2C 0x48
+    - CD74HC4067 mux
+  notes: No synthetic detector mode. Missing ADS1115 keeps the body silent.
+inputs:
+  - name: SerialCommand
+    schema: serial-command.schema.json
+outputs:
+  - name: FieldObservation
+    schema: field-observation.schema.json
+capabilities:
+  - emit-field-observation
+  - excite-laser
+  - passive-scan
+  - identity-verify
+operations:
+  safe:
+    - emit-field-observation
+    - passive-scan
+    - dump-adc
+  mutation:
+    - excite-laser
+    - map-calibration
+    - identity-verify
+notes: >
+  Field Body Protocol v0.1 shared conceptually with echo-grid-ultrasonic-os.
+  Wiring documents (HARDWARE_PINOUT.md, WIRING_PHASE0.md) are invariants.

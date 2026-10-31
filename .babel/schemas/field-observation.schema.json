@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FieldObservation",
+  "description": "Derived from src/protocol/field_observation.h and json_encoder.cpp.",
+  "type": "object",
+  "required": ["schema_version", "body_id", "body_type", "health", "field_regions"],
+  "properties": {
+    "schema_version": { "type": "integer" },
+    "body_id": { "type": "string" },
+    "body_type": { "const": "optical" },
+    "excitation_id": { "type": "integer" },
+    "geometry_state": { "type": "string" },
+    "timestamp": { "type": "string" },
+    "health": { "type": "string" },
+    "modality": { "type": "object" },
+    "field_regions": { "type": "array" }
+  }
+}

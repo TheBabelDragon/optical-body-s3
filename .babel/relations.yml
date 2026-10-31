@@ -1,0 +1,24 @@
+produces:
+  - repo: signal-processor
+    artifact: FieldObservation
+  - repo: metafield-engine
+    artifact: FieldObservation
+  - repo: metafield
+    artifact: FieldObservation
+consumes:
+  - repo: signal-processor
+    artifact: StimulusSession
+compatible_with:
+  - signal-processor
+  - metafield-engine
+  - field-os
+  - echo-grid-ultrasonic-os
+  - field-bus
+observes: []
+controls: []
+extends:
+  - field-bus
+depends_on:
+  - field-bus
+  - babel-interface
+isolates: []
